@@ -1,0 +1,13 @@
+PARSE_OK: C:\dev\recognition\scripts\pc_build_packet_optionA_v1.ps1
+PARSE_OK: C:\dev\recognition\scripts\pc_verify_packet_optionA_v1.ps1
+PARSE_OK: C:\dev\recognition\scripts\_selftest_packet_constitution_v1.ps1
+PARSE_OK: C:\dev\recognition\scripts\recognition_export_session_packet_v1.ps1
+VERIFY_OK: C:\dev\recognition\test_vectors\packet_constitution_v1\v1_minimal_optionA\out\8d6c7944f07cc62b1b8a212ab9f78420b96fdd516ac68b1360e9f439d6bdc050
+RECEIPT_OK: C:\dev\proofs\receipts\recognition.packet_constitution.v1.ndjson
+SELFTEST_OK: Packet Constitution v1 Option A minimal vector -> C:\dev\recognition\test_vectors\packet_constitution_v1\v1_minimal_optionA
+VERIFY_OK: C:\dev\recognition\test_vectors\packet_constitution_v1\v1_negative_vectors\out\955025f63ed4ec0ac379f2832b1d1cf8b4bb9d18cec97f974b248db9df4eaa15
+RECEIPT_OK: C:\dev\proofs\receipts\recognition.packet_constitution.v1.ndjson
+NEG_PACKET_ID: SHA256_MISMATCH: packet_id.txt
+NEG_MANIFEST: SHA256_MISMATCH: manifest.json
+NEG_PAYLOAD: SHA256_MISMATCH: payload/hello.txt
+RECOGNITION_PC_NEGATIVE_VECTORS_V3_OK

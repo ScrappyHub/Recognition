@@ -1,0 +1,39 @@
+{
+  "schema": "recognition.extension_policy.v1",
+  "description": "Default governance policy for Chromium extensions. denied => refuse; review => require human sign-off; allowed => auto-approve. Unknown permissions default to review (conservative).",
+  "max_manifest_version": 3,
+  "min_manifest_version": 2,
+  "denied_permissions": [
+    "debugger",
+    "nativeMessaging",
+    "proxy",
+    "<all_urls>",
+    "*://*/*"
+  ],
+  "review_permissions": [
+    "tabs",
+    "cookies",
+    "history",
+    "bookmarks",
+    "downloads",
+    "management",
+    "webRequest",
+    "webRequestBlocking",
+    "declarativeNetRequest",
+    "clipboardRead",
+    "geolocation"
+  ],
+  "allowed_permissions": [
+    "storage",
+    "alarms",
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "notifications",
+    "clipboardWrite",
+    "unlimitedStorage",
+    "offscreen"
+  ],
+  "allowlist": [],
+  "blocklist": []
+}

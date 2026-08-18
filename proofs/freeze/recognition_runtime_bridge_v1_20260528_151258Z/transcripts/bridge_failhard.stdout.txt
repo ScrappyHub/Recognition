@@ -1,0 +1,20 @@
+RUNTIME_RECEIPT_OK: C:\dev\recognition\proofs\receipts\recognition.runtime.v1.ndjson
+RUNTIME_SESSION_OPEN_OK: recognition-bridge-selftest-v1
+BRIDGE_RECEIPT_OK: C:\dev\recognition\proofs\receipts\recognition.runtime.bridge.v1.ndjson
+RUNTIME_BRIDGE_EVENT_OK: session.open recognition-bridge-selftest-v1
+RUNTIME_RECEIPT_OK: C:\dev\recognition\proofs\receipts\recognition.runtime.v1.ndjson
+RUNTIME_TAB_OPEN_OK: tab-bridge-001
+BRIDGE_RECEIPT_OK: C:\dev\recognition\proofs\receipts\recognition.runtime.bridge.v1.ndjson
+RUNTIME_BRIDGE_EVENT_OK: tab.open tab-bridge-001
+RUNTIME_RECEIPT_OK: C:\dev\recognition\proofs\receipts\recognition.runtime.v1.ndjson
+RUNTIME_NAV_COMMIT_OK: tab-bridge-001
+BRIDGE_RECEIPT_OK: C:\dev\recognition\proofs\receipts\recognition.runtime.bridge.v1.ndjson
+RUNTIME_BRIDGE_EVENT_OK: navigation.commit tab-bridge-001
+RUNTIME_RECEIPT_OK: C:\dev\recognition\proofs\receipts\recognition.runtime.v1.ndjson
+RUNTIME_REPLAY_OK: C:\dev\recognition\runtime\replay\bridge_replay.json
+SELFTEST_RECOGNITION_RUNTIME_BRIDGE_V1_OK
+CAPTURE_OK: bridge_selftest
+NEG_OPEN_TAB_WITHOUT_SESSION_OK
+RECOGNITION_RUNTIME_BRIDGE_NEGATIVE_V1_OK
+CAPTURE_OK: bridge_negative
+RECOGNITION_RUNTIME_BRIDGE_FAILHARD_GREEN

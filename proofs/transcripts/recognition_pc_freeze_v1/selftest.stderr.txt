@@ -1,0 +1,6 @@
+C:\dev\recognition\scripts\_selftest_packet_constitution_v1.ps1 : Cannot process command because of one or more 
+missing mandatory parameters: RepoRoot.
+    + CategoryInfo          : InvalidArgument: (:) [_selftest_packet_constitution_v1.ps1], ParentContainsErrorRecordEx 
+   ception
+    + FullyQualifiedErrorId : MissingMandatoryParameter,_selftest_packet_constitution_v1.ps1
+ 

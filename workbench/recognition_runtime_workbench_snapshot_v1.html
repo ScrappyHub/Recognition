@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Recognition Runtime Workbench v1</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; font-family:Segoe UI, Arial, sans-serif; background:#0f1115; color:#eef2f8; }
+    header { padding:18px 22px; border-bottom:1px solid #252a35; background:#151923; }
+    h1 { margin:0; font-size:22px; }
+    .sub { color:#aab4c3; margin-top:6px; }
+    main { padding:20px; display:grid; grid-template-columns:340px 1fr; gap:18px; }
+    .card { background:#171c26; border:1px solid #283042; border-radius:14px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+    label { display:block; margin:12px 0 6px; color:#c9d2df; font-size:13px; }
+    input { width:100%; box-sizing:border-box; color:#dce6f2; }
+    button { margin-top:14px; width:100%; padding:10px 12px; border:0; border-radius:10px; background:#dce6f2; color:#111722; font-weight:700; cursor:pointer; }
+    .status { margin-top:12px; color:#9ee6b8; white-space:pre-wrap; font-size:13px; }
+    .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+    .metric { background:#10141d; border:1px solid #283042; border-radius:12px; padding:12px; }
+    .metric b { display:block; font-size:22px; margin-top:4px; }
+    table { width:100%; border-collapse:collapse; margin-top:14px; }
+    th, td { border-bottom:1px solid #283042; padding:9px; text-align:left; vertical-align:top; font-size:13px; }
+    th { color:#aab4c3; font-weight:600; }
+    code { color:#a8c7ff; }
+    .tabs { display:flex; gap:8px; margin:14px 0; flex-wrap:wrap; }
+    .tab { padding:8px 10px; border-radius:999px; border:1px solid #33405a; cursor:pointer; color:#c9d2df; }
+    .tab.active { background:#dce6f2; color:#111722; border-color:#dce6f2; }
+    pre { background:#10141d; border:1px solid #283042; border-radius:12px; padding:12px; overflow:auto; max-height:420px; }
+    tr.clickable { cursor:pointer; }
+    tr.clickable:hover { background:#202838; }
+    tr.clickable.active { background:#30415f; }
+    .inspector { margin-top:14px; }
+    .inspector h3 { margin:0; font-size:15px; color:#c9d2df; }
+    .inspectorHead { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+    .copyBtn { width:auto; padding:6px 10px; margin:0; }
+    .searchBox { margin:14px 0 0; }
+    .searchBox input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #33405a; background:#10141d; color:#eef2f8; }
+    .exportBar { display:flex; gap:8px; margin-top:10px; }
+    .exportBar button { width:auto; padding:8px 10px; margin:0; }
+    .graphBox { background:#10141d; border:1px solid #283042; border-radius:12px; padding:14px; margin-top:14px; overflow:auto; }
+    .graphNode { margin:6px 0; font-family:Consolas, monospace; white-space:pre; }
+    .graphRoot { color:#9ee6b8; font-weight:700; }
+    .graphTab { color:#a8c7ff; }
+    .graphUrl { color:#eef2f8; }
+    .seal-strip { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+    .seal-pill { background:#10141d; border:1px solid #2f6f4e; border-radius:12px; padding:10px; }
+    .seal-pill span { display:block; color:#9ee6b8; font-size:12px; font-weight:700; letter-spacing:.04em; }
+    .seal-pill b { display:block; margin-top:4px; font-size:13px; color:#eef2f8; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Recognition Runtime Workbench v1</h1>
+  <div class="sub">Local-first viewer for sealed runtime timeline evidence. No server. No upload.</div>
+</header>
+
+<main>
+  <section class="card" id="leftPanel">
+    <h2>Evidence Summary</h2>
+    <div class="metric">Mode<b id="sideMode">-</b></div>
+    <div class="metric">Started<b id="sideStarted">-</b></div>
+    <div class="metric">Source<b id="sideSource">snapshot</b></div>
+    <div id="status" class="status">Waiting for snapshot.</div>
+  </section>
+
+  <section class="card">
+    <h2 id="sessionTitle">Session</h2>
+    <div class="seal-strip">
+      <div class="seal-pill"><span>SEAL</span><b>GREEN</b></div>
+      <div class="seal-pill"><span>ATTESTATION</span><b>SIGNED</b></div>
+      <div class="seal-pill"><span>VERIFY</span><b>PASS</b></div>
+      <div class="seal-pill"><span>MODE</span><b>LOCAL SNAPSHOT</b></div>
+    </div>
+    <div class="grid">
+      <div class="metric">Events<b id="mEvents">-</b></div>
+      <div class="metric">Tabs<b id="mTabs">-</b></div>
+      <div class="metric">Navigations<b id="mNav">-</b></div>
+      <div class="metric">Last Seq<b id="mSeq">-</b></div>
+    </div>
+
+    <div class="searchBox">
+      <input id="searchInput" type="search" placeholder="Search timeline, tab, URL, title, event id...">
+    </div>
+
+    <div class="exportBar">
+      <button id="copyVisibleBtn">Copy Visible JSON</button>
+      <button id="downloadVisibleBtn">Download Visible JSON</button>
+    </div>
+
+    <div class="tabs">
+      <span class="tab active" data-view="timeline">Timeline</span>
+      <span class="tab" data-view="tabs">Tabs</span>
+      <span class="tab" data-view="nav">Navigation</span>
+      <span class="tab" data-view="graph">Graph</span>
+      <span class="tab" data-view="raw">Raw</span>
+    </div>
+
+    <div id="view"></div>
+  </section>
+</main>
+
+<script>
+const state = { timeline:null, tabs:null, nav:null, summary:null, view:"timeline", query:"" };
+
+function byId(id){ return document.getElementById(id); }
+
+function readJson(fileInputId){
+  return new Promise((resolve,reject)=>{
+    const el = byId(fileInputId);
+    if(!el.files || !el.files[0]) return reject(new Error("Missing file: " + fileInputId));
+    const reader = new FileReader();
+    reader.onload = () => {
+      try { resolve(JSON.parse(reader.result)); }
+      catch(e){ reject(new Error("Invalid JSON in " + fileInputId + ": " + e.message)); }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(el.files[0]);
+  });
+}
+
+function assertSchema(obj, schema){
+  if(!obj || obj.schema !== schema) throw new Error("Bad schema. Expected " + schema);
+}
+
+function escapeHtml(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderMetrics(){
+  const s = state.summary;
+  byId("sessionTitle").textContent = "Session " + s.session_id;
+  byId("mEvents").textContent = s.event_count;
+  byId("mTabs").textContent = s.tab_count;
+  byId("mNav").textContent = s.navigation_count;
+  byId("mSeq").textContent = s.last_seq;
+}
+
+function table(headers, rows, clickable=false){
+  return "<table><thead><tr>" + headers.map(h=>"<th>"+escapeHtml(h)+"</th>").join("") +
+    "</tr></thead><tbody>" + rows.map((r,i)=>{
+      const cls = clickable ? " class=\"clickable\" data-idx=\"" + i + "\"" : "";
+      return "<tr"+cls+">"+r.map(c=>"<td>"+escapeHtml(c)+"</td>").join("")+"</tr>";
+    }).join("") +
+    "</tbody></table>";
+}
+
+function renderInspector(obj){
+  const target = byId("inspector");
+  if(!target) return;
+
+  const json = JSON.stringify(obj || {}, null, 2);
+
+  target.innerHTML =
+    "<div class=\"inspectorHead\">" +
+    "<h3>Event Inspector</h3>" +
+    "<button id=\"copyEventBtn\" class=\"copyBtn\">Copy Event JSON</button>" +
+    "</div>" +
+    "<pre>" + escapeHtml(json) + "</pre>";
+
+  const btn = byId("copyEventBtn");
+  if(btn){
+    btn.addEventListener("click", ()=>{
+      try{
+        navigator.clipboard.writeText(json);
+        btn.textContent = "Copied";
+        setTimeout(()=>{ btn.textContent = "Copy Event JSON"; }, 1200);
+      } catch(e){
+        btn.textContent = "Copy Failed";
+      }
+    });
+  }
+}
+
+function wireTimelineClicks(sourceEvents){
+  const source = sourceEvents || (state.timeline.events || []);
+  document.querySelectorAll("tr.clickable").forEach(row=>{
+    row.addEventListener("click", ()=>{
+      document.querySelectorAll("tr.clickable").forEach(r=>r.classList.remove("active"));
+      row.classList.add("active");
+
+      const idx = Number(row.dataset.idx);
+      const evt = source[idx];
+
+      state.selectedEvent = evt;
+
+      renderInspector(evt);
+    });
+  });
+}
+
+function matchesQuery(obj){
+  const q = (state.query || "").trim().toLowerCase();
+  if(!q) return true;
+  return JSON.stringify(obj || {}).toLowerCase().includes(q);
+}
+
+function visibleEvidence(){
+  if(state.view === "timeline"){
+    return {
+      schema:"recognition.workbench.visible.timeline.v1",
+      view:state.view,
+      query:state.query || "",
+      session_id:state.summary ? state.summary.session_id : "",
+      events:(state.timeline && state.timeline.events ? state.timeline.events : []).filter(matchesQuery)
+    };
+  }
+
+  if(state.view === "tabs"){
+    return {
+      schema:"recognition.workbench.visible.tabs.v1",
+      view:state.view,
+      query:state.query || "",
+      session_id:state.summary ? state.summary.session_id : "",
+      tabs:(state.tabs && state.tabs.tabs ? state.tabs.tabs : []).filter(matchesQuery)
+    };
+  }
+
+  if(state.view === "nav"){
+    return {
+      schema:"recognition.workbench.visible.navigation.v1",
+      view:state.view,
+      query:state.query || "",
+      session_id:state.summary ? state.summary.session_id : "",
+      navigation:(state.nav && state.nav.navigation ? state.nav.navigation : []).filter(matchesQuery)
+    };
+  }
+
+  if(state.view === "graph"){
+    return {
+      schema:"recognition.workbench.visible.graph.v1",
+      view:state.view,
+      query:state.query || "",
+      session_id:state.summary ? state.summary.session_id : "",
+      tabs:(state.tabs && state.tabs.tabs ? state.tabs.tabs : []),
+      navigation:(state.nav && state.nav.navigation ? state.nav.navigation : [])
+    };
+  }
+
+  return {
+    schema:"recognition.workbench.visible.raw.v1",
+    view:state.view,
+    query:state.query || "",
+    state:state
+  };
+}
+
+function downloadText(filename, text){
+  const blob = new Blob([text], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function graphHtml(){
+  const sessionId = state.summary ? state.summary.session_id : "SESSION";
+  const tabs = (state.tabs && state.tabs.tabs) ? state.tabs.tabs : [];
+  const nav = (state.nav && state.nav.navigation) ? state.nav.navigation : [];
+
+  let html = "<div class=\"graphBox\">";
+  html += "<div class=\"graphNode graphRoot\">SESSION " + escapeHtml(sessionId) + "</div>";
+
+  tabs.forEach(tab=>{
+    html += "<div class=\"graphNode graphTab\">├─ TAB " + escapeHtml(tab.tab_id) + "</div>";
+
+    const chain = nav.filter(n => n.tab_id === tab.tab_id);
+
+    if(chain.length === 0){
+      html += "<div class=\"graphNode graphUrl\">│  └─ " + escapeHtml(tab.current_url || "(no navigation)") + "</div>";
+    } else {
+      chain.forEach((n, idx)=>{
+        const branch = idx === chain.length - 1 ? "└─" : "├─";
+        html += "<div class=\"graphNode graphUrl\">│  " + branch + " [" + escapeHtml(n.seq) + "] " + escapeHtml(n.url) + "</div>";
+      });
+    }
+  });
+
+  html += "</div>";
+  return html;
+}
+
+function render(){
+  const view = byId("view");
+
+  if(state.view === "timeline"){
+    const source = (state.timeline.events || []).filter(matchesQuery);
+    const rows = source.map(e => [e.seq, e.ts_utc, e.type, e.tab_id || "", e.event_id || ""]);
+    view.innerHTML = table(["Seq","UTC","Type","Tab","Event ID"], rows, true) + "<div id=\"inspector\" class=\"inspector\"></div>";
+    wireTimelineClicks(source);
+    if(source.length > 0){
+      renderInspector(source[0]);
+
+      const first = document.querySelector("tr.clickable");
+      if(first){ first.classList.add("active"); }
+    } else {
+      renderInspector({ message:"No matching events", query:state.query });
+    }
+    return;
+  }
+
+  if(state.view === "tabs"){
+    const source = (state.tabs.tabs || []).filter(matchesQuery);
+    const rows = source.map(t => [t.tab_id, t.index, t.current_url, t.current_title, t.navigation_count, t.opened_utc, t.latest_utc]);
+    view.innerHTML = table(["Tab","Index","Current URL","Title","Navs","Opened","Latest"], rows);
+    return;
+  }
+
+  if(state.view === "nav"){
+    const source = (state.nav.navigation || []).filter(matchesQuery);
+    const rows = source.map(n => [n.seq, n.ts_utc, n.tab_id, n.url, n.title]);
+    view.innerHTML = table(["Seq","UTC","Tab","URL","Title"], rows);
+    return;
+  }
+
+  if(state.view === "graph"){
+    view.innerHTML = graphHtml();
+    return;
+  }
+
+  view.innerHTML = "<pre>" + escapeHtml(JSON.stringify(state, null, 2)) + "</pre>";
+}
+
+const searchInput = byId("searchInput");
+if(searchInput){
+  searchInput.addEventListener("input", ()=>{
+    state.query = searchInput.value || "";
+    render();
+  });
+}
+
+const copyVisibleBtn = byId("copyVisibleBtn");
+if(copyVisibleBtn){
+  copyVisibleBtn.addEventListener("click", ()=>{
+    const text = JSON.stringify(visibleEvidence(), null, 2);
+    try{
+      navigator.clipboard.writeText(text);
+      copyVisibleBtn.textContent = "Copied";
+      setTimeout(()=>{ copyVisibleBtn.textContent = "Copy Visible JSON"; }, 1200);
+    } catch(e){
+      copyVisibleBtn.textContent = "Copy Failed";
+    }
+  });
+}
+
+const downloadVisibleBtn = byId("downloadVisibleBtn");
+if(downloadVisibleBtn){
+  downloadVisibleBtn.addEventListener("click", ()=>{
+    const text = JSON.stringify(visibleEvidence(), null, 2);
+    downloadText("recognition_visible_evidence.json", text);
+  });
+}
+
+document.querySelectorAll(".tab").forEach(t=>{
+  t.addEventListener("click", ()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+    t.classList.add("active");
+    state.view = t.dataset.view;
+    render();
+  });
+});
+
+byId("loadBtn").addEventListener("click", async ()=>{
+  try{
+    byId("status").textContent = "Loading...";
+    state.timeline = await readJson("timelineFile");
+    state.tabs = await readJson("tabsFile");
+    state.nav = await readJson("navFile");
+    state.summary = await readJson("summaryFile");
+
+    assertSchema(state.timeline, "recognition.runtime.timeline.v1");
+    assertSchema(state.tabs, "recognition.runtime.tabs_timeline.v1");
+    assertSchema(state.nav, "recognition.runtime.navigation_chain.v1");
+    assertSchema(state.summary, "recognition.runtime.session_summary.v1");
+
+    renderMetrics();
+    render();
+
+    byId("status").textContent = "WORKBENCH_LOAD_OK";
+  } catch(e){
+    byId("status").textContent = "WORKBENCH_LOAD_FAIL: " + e.message;
+  }
+});
+</script>
+<script id="embeddedTimeline" type="application/json">
+{
+    "schema":  "recognition.runtime.timeline.v1",
+    "session_id":  "recognition-runtime-full-green-v1",
+    "started_utc":  "2026-03-31T13:00:00.000Z",
+    "mode":  "standard",
+    "event_count":  3,
+    "tab_count":  1,
+    "navigation_count":  1,
+    "last_seq":  3,
+    "events":  [
+                   {
+                       "seq":  1,
+                       "ts_utc":  "2026-03-31T13:00:00.000Z",
+                       "type":  "session.started",
+                       "tab_id":  null,
+                       "event_id":  "evt-0001"
+                   },
+                   {
+                       "seq":  2,
+                       "ts_utc":  "2026-03-31T13:00:05.000Z",
+                       "type":  "tab.opened",
+                       "tab_id":  "tab-001",
+                       "event_id":  "evt-0002"
+                   },
+                   {
+                       "seq":  3,
+                       "ts_utc":  "2026-03-31T13:00:10.000Z",
+                       "type":  "navigation.committed",
+                       "tab_id":  "tab-001",
+                       "event_id":  "evt-0003"
+                   }
+               ]
+}
+
+</script>
+<script id="embeddedTabs" type="application/json">
+{
+    "schema":  "recognition.runtime.tabs_timeline.v1",
+    "session_id":  "recognition-runtime-full-green-v1",
+    "tabs":  [
+                 {
+                     "tab_id":  "tab-001",
+                     "opened_seq":  2,
+                     "opened_utc":  "2026-03-31T13:00:05.000Z",
+                     "latest_seq":  3,
+                     "latest_utc":  "2026-03-31T13:00:10.000Z",
+                     "index":  0,
+                     "current_url":  "https://example.com/docs",
+                     "current_title":  "Example Docs",
+                     "navigation_count":  1,
+                     "is_active":  true,
+                     "is_pinned":  false
+                 }
+             ]
+}
+
+</script>
+<script id="embeddedNav" type="application/json">
+{
+    "schema":  "recognition.runtime.navigation_chain.v1",
+    "session_id":  "recognition-runtime-full-green-v1",
+    "navigation":  [
+                       {
+                           "seq":  3,
+                           "ts_utc":  "2026-03-31T13:00:10.000Z",
+                           "tab_id":  "tab-001",
+                           "url":  "https://example.com/docs",
+                           "title":  "Example Docs"
+                       }
+                   ]
+}
+
+</script>
+<script id="embeddedSummary" type="application/json">
+{
+    "schema":  "recognition.runtime.session_summary.v1",
+    "session_id":  "recognition-runtime-full-green-v1",
+    "started_utc":  "2026-03-31T13:00:00.000Z",
+    "mode":  "standard",
+    "event_count":  3,
+    "tab_count":  1,
+    "navigation_count":  1,
+    "last_seq":  3,
+    "source":  "C:\\dev\\recognition\\runtime\\events.ndjson"
+}
+
+</script>
+<script>
+window.addEventListener("DOMContentLoaded", () => {
+  try {
+    state.timeline = JSON.parse(document.getElementById("embeddedTimeline").textContent);
+    state.tabs = JSON.parse(document.getElementById("embeddedTabs").textContent);
+    state.nav = JSON.parse(document.getElementById("embeddedNav").textContent);
+    state.summary = JSON.parse(document.getElementById("embeddedSummary").textContent);
+    renderMetrics();
+    render();
+    byId("status").textContent = "WORKBENCH_SNAPSHOT_LOAD_OK";
+    byId("sideMode").textContent = state.summary.mode || "-";
+    byId("sideStarted").textContent = state.summary.started_utc || "-";
+    byId("sideSource").textContent = "embedded";
+  } catch(e) {
+    byId("status").textContent = "WORKBENCH_SNAPSHOT_LOAD_FAIL: " + e.message;
+  }
+});
+</script>
+</body>
+</html>

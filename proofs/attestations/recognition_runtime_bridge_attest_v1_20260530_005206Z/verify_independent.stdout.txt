@@ -1,0 +1,1 @@
+Good "recognition/runtime-bridge-attestation" signature for recognition-runtime-bridge with ED25519 key SHA256:jbz2L2wfRGPx36LOApve7Gs5CYn9N4oW/AO/8Pz+7UY

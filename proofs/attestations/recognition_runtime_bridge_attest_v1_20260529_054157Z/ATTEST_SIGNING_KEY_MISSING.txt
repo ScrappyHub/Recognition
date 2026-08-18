@@ -1,0 +1,4 @@
+C:\dev\recognition\proofs\keys\recognition_runtime_bridge_attest_ed25519
+C:\dev\recognition\proofs\keys\recognition_ed25519
+C:\dev\recognition\proofs\trust\recognition_ed25519
+C:\dev\recognition\keys\recognition_ed25519

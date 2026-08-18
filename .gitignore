@@ -1,0 +1,18 @@
+# Volatile / plaintext-at-rest areas (never committed)
+runtime/
+tmp/
+profiles/
+vault/
+proofs/runs/
+
+# Secret key material — NEVER commit. Public trust root lives in proofs/trust/.
+proofs/keys/
+*.ed25519
+id_ed25519*
+*.pem
+*_private*
+
+# Backup litter
+*.bak
+*.bak_*
+*.ps1.bak_*

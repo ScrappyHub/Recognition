@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Recognition Hello (Good)",
+  "version": "1.0.0",
+  "description": "Sample extension that should be auto-approved by the default policy.",
+  "permissions": ["storage", "alarms"],
+  "action": { "default_title": "Hello" },
+  "background": { "service_worker": "background.js" }
+}

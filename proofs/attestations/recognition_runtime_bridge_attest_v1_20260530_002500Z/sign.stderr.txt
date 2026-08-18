@@ -1,0 +1,2 @@
+Signing file C:\dev\recognition\proofs\attestations\recognition_runtime_bridge_attest_v1_20260530_002500Z\attestation.json
+Write signature to C:\dev\recognition\proofs\attestations\recognition_runtime_bridge_attest_v1_20260530_002500Z\attestation.json.sig

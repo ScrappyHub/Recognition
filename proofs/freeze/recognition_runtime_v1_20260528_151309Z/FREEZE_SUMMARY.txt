@@ -1,0 +1,7 @@
+schema=recognition.runtime.freeze.v1
+repo_root=C:\dev\recognition
+bundle=C:\dev\recognition\proofs\freeze\recognition_runtime_v1_20260528_151309Z
+full_green_token=FULL_GREEN_RUNNER_RECOGNITION_RUNTIME_V1_OK
+negative_token=RECOGNITION_RUNTIME_REPLAY_NEGATIVE_V1_OK
+runtime_receipts=proofs/receipts/recognition.runtime.v1.ndjson
+packet_receipts=proofs/receipts/recognition.packet_constitution.v1.ndjson

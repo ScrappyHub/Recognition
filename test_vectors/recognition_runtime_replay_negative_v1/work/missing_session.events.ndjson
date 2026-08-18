@@ -1,0 +1,1 @@
+{"schema":"recognition.event.v1","event_id":"e1","seq":1,"ts_utc":"t","type":"tab.opened","tab_id":"t1","data":{"url":"u","title":"t","index":0}}

@@ -1,0 +1,28 @@
+{
+    "project_id":  "recognition",
+    "canonical_name":  "Recognition",
+    "ecosystem":  {
+                      "registry_schema":  "atlas.service.registry.v1",
+                      "service_id":  "recognition",
+                      "layer":  "foundation.identity-profile",
+                      "role":  "Identity-bound encrypted profile and governed recognition instrument.",
+                      "standalone_first":  true,
+                      "upstream_services":  [
+                                                "neverlost",
+                                                "covenant-gate"
+                                            ],
+                      "downstream_users":  [
+                                               "rooted"
+                                           ],
+                      "contract_families":  [
+                                                "identity",
+                                                "profile",
+                                                "encryption",
+                                                "recognition",
+                                                "receipt"
+                                            ],
+                      "service_map_path":  "C:\\dev\\_ecosystem\\SERVICE_MAP.md",
+                      "registry_path":  "C:\\dev\\_ecosystem\\service.registry.json",
+                      "integration_doc_path":  "docs/canonical/ECOSYSTEM_INTEGRATION.md"
+                  }
+}

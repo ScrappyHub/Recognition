@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Recognition Runtime Workbench v1</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin:0; font-family:Segoe UI, Arial, sans-serif; background:#0f1115; color:#eef2f8; }
+    header { padding:18px 22px; border-bottom:1px solid #252a35; background:#151923; }
+    h1 { margin:0; font-size:22px; }
+    .sub { color:#aab4c3; margin-top:6px; }
+    main { padding:20px; display:grid; grid-template-columns:340px 1fr; gap:18px; }
+    .card { background:#171c26; border:1px solid #283042; border-radius:14px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+    label { display:block; margin:12px 0 6px; color:#c9d2df; font-size:13px; }
+    input { width:100%; box-sizing:border-box; color:#dce6f2; }
+    button { margin-top:14px; width:100%; padding:10px 12px; border:0; border-radius:10px; background:#dce6f2; color:#111722; font-weight:700; cursor:pointer; }
+    .status { margin-top:12px; color:#9ee6b8; white-space:pre-wrap; font-size:13px; }
+    .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+    .metric { background:#10141d; border:1px solid #283042; border-radius:12px; padding:12px; }
+    .metric b { display:block; font-size:22px; margin-top:4px; }
+    table { width:100%; border-collapse:collapse; margin-top:14px; }
+    th, td { border-bottom:1px solid #283042; padding:9px; text-align:left; vertical-align:top; font-size:13px; }
+    th { color:#aab4c3; font-weight:600; }
+    code { color:#a8c7ff; }
+    .tabs { display:flex; gap:8px; margin:14px 0; flex-wrap:wrap; }
+    .tab { padding:8px 10px; border-radius:999px; border:1px solid #33405a; cursor:pointer; color:#c9d2df; }
+    .tab.active { background:#dce6f2; color:#111722; border-color:#dce6f2; }
+    pre { background:#10141d; border:1px solid #283042; border-radius:12px; padding:12px; overflow:auto; max-height:420px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Recognition Runtime Workbench v1</h1>
+  <div class="sub">Local-first viewer for sealed runtime timeline evidence. No server. No upload.</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Load Evidence</h2>
+    <label>timeline.json</label>
+    <input id="timelineFile" type="file" accept=".json">
+
+    <label>tabs_timeline.json</label>
+    <input id="tabsFile" type="file" accept=".json">
+
+    <label>navigation_chain.json</label>
+    <input id="navFile" type="file" accept=".json">
+
+    <label>session_summary.json</label>
+    <input id="summaryFile" type="file" accept=".json">
+
+    <button id="loadBtn">Load Workbench</button>
+    <div id="status" class="status">Waiting for files.</div>
+  </section>
+
+  <section class="card">
+    <h2 id="sessionTitle">Session</h2>
+    <div class="grid">
+      <div class="metric">Events<b id="mEvents">-</b></div>
+      <div class="metric">Tabs<b id="mTabs">-</b></div>
+      <div class="metric">Navigations<b id="mNav">-</b></div>
+      <div class="metric">Last Seq<b id="mSeq">-</b></div>
+    </div>
+
+    <div class="tabs">
+      <span class="tab active" data-view="timeline">Timeline</span>
+      <span class="tab" data-view="tabs">Tabs</span>
+      <span class="tab" data-view="nav">Navigation</span>
+      <span class="tab" data-view="raw">Raw</span>
+    </div>
+
+    <div id="view"></div>
+  </section>
+</main>
+
+<script>
+const state = { timeline:null, tabs:null, nav:null, summary:null, view:"timeline" };
+
+function byId(id){ return document.getElementById(id); }
+
+function readJson(fileInputId){
+  return new Promise((resolve,reject)=>{
+    const el = byId(fileInputId);
+    if(!el.files || !el.files[0]) return reject(new Error("Missing file: " + fileInputId));
+    const reader = new FileReader();
+    reader.onload = () => {
+      try { resolve(JSON.parse(reader.result)); }
+      catch(e){ reject(new Error("Invalid JSON in " + fileInputId + ": " + e.message)); }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(el.files[0]);
+  });
+}
+
+function assertSchema(obj, schema){
+  if(!obj || obj.schema !== schema) throw new Error("Bad schema. Expected " + schema);
+}
+
+function escapeHtml(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderMetrics(){
+  const s = state.summary;
+  byId("sessionTitle").textContent = "Session " + s.session_id;
+  byId("mEvents").textContent = s.event_count;
+  byId("mTabs").textContent = s.tab_count;
+  byId("mNav").textContent = s.navigation_count;
+  byId("mSeq").textContent = s.last_seq;
+}
+
+function table(headers, rows){
+  return "<table><thead><tr>" + headers.map(h=>"<th>"+escapeHtml(h)+"</th>").join("") +
+    "</tr></thead><tbody>" + rows.map(r=>"<tr>"+r.map(c=>"<td>"+escapeHtml(c)+"</td>").join("")+"</tr>").join("") +
+    "</tbody></table>";
+}
+
+function render(){
+  const view = byId("view");
+
+  if(state.view === "timeline"){
+    const rows = (state.timeline.events || []).map(e => [e.seq, e.ts_utc, e.type, e.tab_id || "", e.event_id || ""]);
+    view.innerHTML = table(["Seq","UTC","Type","Tab","Event ID"], rows);
+    return;
+  }
+
+  if(state.view === "tabs"){
+    const rows = (state.tabs.tabs || []).map(t => [t.tab_id, t.index, t.current_url, t.current_title, t.navigation_count, t.opened_utc, t.latest_utc]);
+    view.innerHTML = table(["Tab","Index","Current URL","Title","Navs","Opened","Latest"], rows);
+    return;
+  }
+
+  if(state.view === "nav"){
+    const rows = (state.nav.navigation || []).map(n => [n.seq, n.ts_utc, n.tab_id, n.url, n.title]);
+    view.innerHTML = table(["Seq","UTC","Tab","URL","Title"], rows);
+    return;
+  }
+
+  view.innerHTML = "<pre>" + escapeHtml(JSON.stringify(state, null, 2)) + "</pre>";
+}
+
+document.querySelectorAll(".tab").forEach(t=>{
+  t.addEventListener("click", ()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+    t.classList.add("active");
+    state.view = t.dataset.view;
+    render();
+  });
+});
+
+byId("loadBtn").addEventListener("click", async ()=>{
+  try{
+    byId("status").textContent = "Loading...";
+    state.timeline = await readJson("timelineFile");
+    state.tabs = await readJson("tabsFile");
+    state.nav = await readJson("navFile");
+    state.summary = await readJson("summaryFile");
+
+    assertSchema(state.timeline, "recognition.runtime.timeline.v1");
+    assertSchema(state.tabs, "recognition.runtime.tabs_timeline.v1");
+    assertSchema(state.nav, "recognition.runtime.navigation_chain.v1");
+    assertSchema(state.summary, "recognition.runtime.session_summary.v1");
+
+    renderMetrics();
+    render();
+
+    byId("status").textContent = "WORKBENCH_LOAD_OK";
+  } catch(e){
+    byId("status").textContent = "WORKBENCH_LOAD_FAIL: " + e.message;
+  }
+});
+</script>
+</body>
+</html>

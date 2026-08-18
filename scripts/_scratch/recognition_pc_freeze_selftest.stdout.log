@@ -1,0 +1,3 @@
+VERIFY_OK: C:\dev\recognition\test_vectors\packet_constitution_v1\v1_minimal_optionA\out\8d6c7944f07cc62b1b8a212ab9f78420b96fdd516ac68b1360e9f439d6bdc050
+RECEIPT_OK: C:\dev\proofs\receipts\recognition.packet_constitution.v1.ndjson
+SELFTEST_OK: Packet Constitution v1 Option A minimal vector -> C:\dev\recognition\test_vectors\packet_constitution_v1\v1_minimal_optionA

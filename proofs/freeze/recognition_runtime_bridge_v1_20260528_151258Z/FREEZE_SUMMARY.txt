@@ -1,0 +1,7 @@
+schema=recognition.runtime.bridge.freeze.v1
+repo_root=C:\dev\recognition
+bundle=C:\dev\recognition\proofs\freeze\recognition_runtime_bridge_v1_20260528_151258Z
+runtime_token=FREEZE_RECOGNITION_RUNTIME_V1_OK
+bridge_token=RECOGNITION_RUNTIME_BRIDGE_FAILHARD_GREEN
+bridge_positive=SELFTEST_RECOGNITION_RUNTIME_BRIDGE_V1_OK
+bridge_negative=RECOGNITION_RUNTIME_BRIDGE_NEGATIVE_V1_OK

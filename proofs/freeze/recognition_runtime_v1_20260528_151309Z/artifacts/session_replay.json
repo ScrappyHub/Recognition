@@ -1,0 +1,14 @@
+{
+    "schema":  "recognition.runtime.replay.v1",
+    "session_id":  "recognition-runtime-full-green-v1",
+    "event_count":  3,
+    "nav_count":  1,
+    "tab_count":  1,
+    "tabs":  [
+                 {
+                     "index":  0,
+                     "title":  "Example Docs",
+                     "url":  "https://example.com/docs"
+                 }
+             ]
+}

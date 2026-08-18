@@ -1,0 +1,4 @@
+
+{"data":{"mode":"standard","session_id":"recognition-runtime-selftest-v1"},"event_id":"evt-0001","schema":"recognition.event.v1","seq":1,"tab_id":null,"ts_utc":"2026-03-31T12:00:00.000Z","type":"session.started"}
+{"data":{"index":0,"title":"Example Domain","url":"https://example.com/"},"event_id":"evt-0002","schema":"recognition.event.v1","seq":2,"tab_id":"tab-001","ts_utc":"2026-03-31T12:00:05.000Z","type":"tab.opened"}
+{"data":{"title":"Example Domain","url":"https://example.com/"},"event_id":"evt-0003","schema":"recognition.event.v1","seq":3,"tab_id":"tab-001","ts_utc":"2026-03-31T12:00:10.000Z","type":"navigation.committed"}

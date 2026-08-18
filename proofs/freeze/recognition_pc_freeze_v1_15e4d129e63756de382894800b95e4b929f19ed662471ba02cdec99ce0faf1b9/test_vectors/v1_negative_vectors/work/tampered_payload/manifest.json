@@ -1,0 +1,1 @@
+{"files":[{"bytes":6,"path":"payload/hello.txt","sha256":"5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"},{"bytes":65,"path":"payload/meta.json","sha256":"50cdf1dc47748299742105f4b3f27b15c5055317e3639513bfef45b59db36f50"}],"option":"A","schema":"packet.manifest.v1"}

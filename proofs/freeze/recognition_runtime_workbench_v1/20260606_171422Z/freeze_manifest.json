@@ -1,0 +1,17 @@
+{
+    "schema":  "recognition.runtime.workbench.freeze.v1",
+    "status":  "GREEN",
+    "run_id":  "20260606_171422Z",
+    "repo_root":  "C:\\dev\\recognition",
+    "bundle":  "C:\\dev\\recognition\\proofs\\freeze\\recognition_runtime_workbench_v1\\20260606_171422Z",
+    "validator_token":  "RECOGNITION_RUNTIME_WORKBENCH_VALIDATE_V1_OK",
+    "workbench_snapshot":  "artifacts/recognition_runtime_workbench_snapshot_v1.html",
+    "seal_index":  "artifacts/recognition_runtime_bridge_seal_index_v1.json",
+    "attestation_json":  "artifacts/attestation.json",
+    "hashes":  {
+                   "workbench_snapshot_sha256":  "4378979c6be9f4f1ab98cbb5c232cb2b973a940dc0dcf7dc8d0137354d27ef51",
+                   "seal_index_sha256":  "0ef3fa1db6e766a2350f020885f597040ef35770d36f857dbb8003515c9803f9",
+                   "attestation_json_sha256":  "74a16e24bfa404c95ebcdc27db0b7259f1b006c18a2a463736656c535740ef4c",
+                   "attestation_sig_sha256":  "436242018cce2e3baaeb11d67c0ef0813e140f764fa35e9b84c623f81c7b3d8e"
+               }
+}

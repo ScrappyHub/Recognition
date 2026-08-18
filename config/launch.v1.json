@@ -1,0 +1,9 @@
+{
+  "schema": "recognition.launch.v1",
+  "description": "Governed launch PLAN config. Recognition verifies these extensions against the governance ledger and emits the governed launch manifest (allow-only) as evidence; it does NOT launch a browser. chromium_path is recorded in the manifest only. Empty = auto-detect for reporting.",
+  "chromium_path": "",
+  "user_data_dir": "runtime/chromium-profile",
+  "extensions": [
+    "samples/extensions/hello-good"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+    "schema":  "recognition.runtime_bridge.seal_index.v1",
+    "status":  "GREEN",
+    "repo_root":  "C:\\dev\\recognition",
+    "attestation_bundle":  "C:\\dev\\recognition\\proofs\\attestations\\recognition_runtime_bridge_attest_v1_20260530_005206Z",
+    "seal_verifier":  "C:\\dev\\recognition\\scripts\\_scratch\\RUN_RECOGNITION_RUNTIME_BRIDGE_SEAL_VERIFY_V1.ps1",
+    "attestation_verifier":  "C:\\dev\\recognition\\scripts\\recognition_verify_runtime_bridge_attestation_v1.ps1",
+    "tokens":  [
+                   "SELFTEST_RECOGNITION_RUNTIME_BRIDGE_V1_OK",
+                   "RECOGNITION_RUNTIME_BRIDGE_FAILHARD_GREEN",
+                   "FREEZE_RECOGNITION_RUNTIME_BRIDGE_V1_OK",
+                   "RECOGNITION_RUNTIME_BRIDGE_ATTEST_V1_OK",
+                   "RECOGNITION_RUNTIME_BRIDGE_ATTEST_VERIFY_V1_OK",
+                   "RECOGNITION_RUNTIME_BRIDGE_SEAL_VERIFY_V1_OK",
+                   "FREEZE_RECOGNITION_RUNTIME_WORKBENCH_V1_OK"
+               ],
+    "files":  {
+                  "seal_doc_sha256":  "6061c226fb08bbab3dfa11d98a4c659788065e19ffb413c4d9a3163b0f4a7bec",
+                  "attestation_json_sha256":  "74a16e24bfa404c95ebcdc27db0b7259f1b006c18a2a463736656c535740ef4c",
+                  "attestation_sig_sha256":  "436242018cce2e3baaeb11d67c0ef0813e140f764fa35e9b84c623f81c7b3d8e",
+                  "attestation_sha256sums_sha256":  "0bb20d98fc87c25c618a37d7e818f3d2483a9d01e327e09e2d8ad2f367af49ad",
+                  "seal_verifier_sha256":  "5b46aef6e93171f43d37b312e4ff1b34d3a561be4a3f26c64fdf0ef1c759d267",
+                  "attest_verifier_sha256":  "0b5b233a7dfb1dadbd69b0eea0b7e81480e0c98843f6dab4bfdec82a26eb5400",
+                  "workbench_freeze_manifest_sha256":  "c3d838c880f41d62ce5a615ae988d2d2a1be66120ed35337d98bba78f5f5f223",
+                  "workbench_freeze_sha256sums_sha256":  "7f0526a1abf5dc0a68684f979eb36eabbd89f513c67274c029f5925ba32be59d"
+              },
+    "workbench_freeze_bundle":  "C:\\dev\\recognition\\proofs\\freeze\\recognition_runtime_workbench_v1\\20260606_171422Z",
+    "workbench_freeze_manifest":  "C:\\dev\\recognition\\proofs\\freeze\\recognition_runtime_workbench_v1\\20260606_171422Z\\freeze_manifest.json",
+    "workbench_freeze_sha256sums":  "C:\\dev\\recognition\\proofs\\freeze\\recognition_runtime_workbench_v1\\20260606_171422Z\\sha256sums.txt"
+}

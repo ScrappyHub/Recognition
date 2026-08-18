@@ -1,0 +1,2 @@
+WORKBENCH_VALIDATE_OK: C:\dev\recognition\workbench\recognition_runtime_workbench_snapshot_v1.html
+RECOGNITION_RUNTIME_WORKBENCH_VALIDATE_V1_OK

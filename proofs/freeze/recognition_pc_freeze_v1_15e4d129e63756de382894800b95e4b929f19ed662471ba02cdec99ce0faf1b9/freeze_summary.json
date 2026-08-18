@@ -1,0 +1,10 @@
+{
+  "freeze_schema": "recognition.packet_constitution.freeze.v1",
+  "repo_root": "C:\\dev\\recognition",
+  "packet_id": "15e4d129e63756de382894800b95e4b929f19ed662471ba02cdec99ce0faf1b9",
+  "packet_dir": "C:\\dev\\recognition\\packets\\outbox\\15e4d129e63756de382894800b95e4b929f19ed662471ba02cdec99ce0faf1b9",
+  "repo_receipt": "C:\\dev\\recognition\\proofs\\receipts\\recognition.packet_constitution.v1.ndjson",
+  "positive_runner": "FULL_GREEN_RUNNER_RECOGNITION_PC_FREEZE_V2",
+  "negative_runner": "RUN_RECOGNITION_PC_NEGATIVE_VECTORS_V3",
+  "status": "GREEN"
+}

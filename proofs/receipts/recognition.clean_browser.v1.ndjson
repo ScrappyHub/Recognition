@@ -1,0 +1,1 @@
+{"schema":"recognition.clean_browser.receipt.v1","action":"session.run_ephemeral","profile_id":"clean-browser-selftest-v1","session_id":"clean-browser-selftest-session-v1","encrypted_summary_written":true,"plaintext_workspace_wiped":true,"ts_utc":"2026-07-03T23:56:34.1234050Z"}
