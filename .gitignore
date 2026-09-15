@@ -17,6 +17,7 @@ obj/
 # spec + code + trust root + attestation bundles, not raw local receipts.
 proofs/receipts/
 proofs/identity/
+proofs/software/
 packets/outbox/
 dist/
 

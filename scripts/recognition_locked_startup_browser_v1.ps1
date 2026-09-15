@@ -9,7 +9,7 @@
 #   pwsh -File recognition_locked_startup_browser_v1.ps1 -RepoRoot .
 # Tokens: RECOGNITION_LOCKED_STARTUP_OK | RECOGNITION_LOCKED_STARTUP_BLOCKED
 
-param([Parameter(Mandatory=$true)][string]$RepoRoot)
+param([Parameter(Mandatory=$true)][string]$RepoRoot,[string]$BinaryPath="",[switch]$EnforceSoftwareId)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -46,6 +46,26 @@ Write-Host "policy present and parseable"
 $trust = Join-Path (Join-Path (Join-Path $RepoRoot "proofs") "trust") "allowed_signers"
 if(-not (Test-Path -LiteralPath $trust -PathType Leaf)){ Blocked "trust root missing (proofs/trust/allowed_signers)" }
 Write-Host "trust root pinned"
+
+# 3.5) SoftwareID — verify the running browser's bytes against its signed record.
+# Fail-closed on a real mismatch (§4.1/§4.2/§5.1-5.3); advisory when the build is
+# unsealed (no signed record yet), so dev builds still launch.
+try {
+  $sidScript = Join-Path $PSScriptRoot "recognition_verify_softwareid_v1.ps1"
+  if(Test-Path -LiteralPath $sidScript -PathType Leaf){
+    if($BinaryPath){ $sidOut = & $sidScript -RepoRoot $RepoRoot -BinaryPath $BinaryPath *>&1 | Out-String }
+    else           { $sidOut = & $sidScript -RepoRoot $RepoRoot *>&1 | Out-String }
+    if($sidOut -match "RECOGNITION_SOFTWAREID_BLOCKED"){
+      # The real browser launch passes -EnforceSoftwareId and fails closed. prove-all /
+      # the release gate rebuild the binary constantly, so there it is advisory (the
+      # mechanism itself is proven by the softwareid selftest, not the live binary hash).
+      if($EnforceSoftwareId){ Blocked "software identity mismatch — the browser binary was modified or is not authentically signed" }
+      else { Write-Host "software identity: BLOCKED (advisory in this context — binary differs from the sealed record)" -ForegroundColor Yellow }
+    }
+    elseif($sidOut -match "RECOGNITION_SOFTWAREID_OK"){ Write-Host "software identity verified (signed SoftwareID matches the running binary)" }
+    else { Write-Host "software identity: unattested build (advisory)" }
+  }
+} catch { Blocked ("software identity check error: " + $_.Exception.Message) }
 
 # 4) Evidence chain initialized — record the governed session start
 try {

@@ -59,6 +59,19 @@ CopyInto "proofs\trust" "proofs\trust"
 $scratch = Join-Path (Join-Path $dist "scripts") "_scratch"
 if(Test-Path -LiteralPath $scratch){ Remove-Item -LiteralPath $scratch -Recurse -Force }
 
+# 2b) seal the SoftwareID of the shipped binary (best-effort — needs the signing key).
+# The shipped browser then verifies its own bytes against this signed record at launch.
+$distExe = Join-Path $dist "browser\RecognitionBrowser.exe"
+$sealScript = Join-Path $S "recognition_seal_softwareid_v1.ps1"
+if((Test-Path -LiteralPath $distExe) -and (Test-Path -LiteralPath $sealScript)){
+  Write-Host "=== sealing SoftwareID into the distribution ===" -ForegroundColor Cyan
+  try {
+    $sres = & $sealScript -RepoRoot $dist -BinaryPath $distExe *>&1 | Out-String
+    if($sres -match "RECOGNITION_SEAL_SOFTWAREID_V1_OK"){ Write-Host "sealed SoftwareID -> dist ships attested" -ForegroundColor Green }
+    else { Write-Host ("NOTE: SoftwareID not sealed (signing key absent?) — dist ships UNATTESTED:`n" + $sres.Trim()) -ForegroundColor Yellow }
+  } catch { Write-Host ("NOTE: SoftwareID seal skipped: " + $_.Exception.Message) -ForegroundColor Yellow }
+}
+
 # 3) wrap the distribution in a governed packet + verify it
 Write-Host "=== packaging dist as a governed packet ===" -ForegroundColor Cyan
 $outbox = Join-Path $RepoRoot "packets\outbox"

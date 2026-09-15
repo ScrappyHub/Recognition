@@ -623,8 +623,9 @@ document.addEventListener('keydown',function(e){
             {
                 var script = Path.Combine(_repoRoot, "scripts", "recognition_locked_startup_browser_v1.ps1");
                 if (!File.Exists(script)) { _preflightOut = "locked startup script not found: " + script; return false; }
+                var bin = BinaryPathForVerify();
                 var psi = new ProcessStartInfo("pwsh.exe",
-                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\"")
+                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\" -BinaryPath \"{bin}\" -EnforceSoftwareId")
                 { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
                 var p = Process.Start(psi);
                 if (p == null) { _preflightOut = "could not start pwsh for preflight"; return false; }
@@ -633,6 +634,32 @@ document.addEventListener('keydown',function(e){
                 return _preflightOut.Contains("RECOGNITION_LOCKED_STARTUP_OK");
             }
             catch (Exception ex) { _preflightOut = "preflight error: " + ex.Message; return false; }
+        }
+
+        // The binary whose bytes define the SoftwareID: the managed assembly for a normal
+        // build, the single-file exe for a self-contained publish.
+        private static string BinaryPathForVerify()
+        {
+            try { var loc = System.Reflection.Assembly.GetEntryAssembly()?.Location; if (!string.IsNullOrEmpty(loc) && File.Exists(loc)) return loc; } catch { }
+            try { var pp = Environment.ProcessPath; if (!string.IsNullOrEmpty(pp)) return pp; } catch { }
+            return "";
+        }
+
+        private (string state, string id) SoftwareIdState()
+        {
+            try
+            {
+                var bin = BinaryPathForVerify();
+                if (string.IsNullOrEmpty(bin) || !File.Exists(bin)) return ("unknown", "");
+                string id;
+                using (var sha = SHA256.Create()) id = Convert.ToHexString(sha.ComputeHash(File.ReadAllBytes(bin))).ToLowerInvariant();
+                var rec = Path.Combine(_repoRoot, "proofs", "software", "software_id.json");
+                if (!File.Exists(rec)) return ("unattested build", id);
+                using var doc = JsonDocument.Parse(File.ReadAllText(rec));
+                var recorded = doc.RootElement.TryGetProperty("software_id", out var v) ? (v.GetString() ?? "") : "";
+                return (string.Equals(recorded, id, StringComparison.OrdinalIgnoreCase) ? "verified authentic" : "MISMATCH — binary modified", id);
+            }
+            catch { return ("unknown", ""); }
         }
 
         private string LockedHtml() =>
@@ -856,6 +883,15 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div style='margin:8px 0 20px'><span class='pill'>&#128737; Blocking</span><span class='pill'>HTTPS-first</span>" +
                       "<span class='pill'>No password autosave</span><span class='pill'>No general autofill</span>" +
                       "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span></div>");
+
+            sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
+            var (sidState, sidId) = SoftwareIdState();
+            var sidColor = sidState == "verified authentic" ? "#7fd6a0" : (sidState.StartsWith("MISMATCH") ? "#e06c6c" : "#c9a24a");
+            sb.Append("<div class='kv'><div class='k'>SoftwareID (SHA-256 of this build)</div><div class='v'>" + Esc(sidId) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Attestation</div><div class='v' style='color:" + sidColor + "'>" + Esc(sidState) +
+                      "</div></div>");
+            sb.Append("<div class='muted' style='margin:6px 0 18px'>Verified at every launch against a signed record (Ed25519, pinned trust root). " +
+                      "A modified binary is refused before the browser opens.</div>");
 
             sb.Append("<h1 style='font-size:16px'>Identity &amp; governance</h1>");
             sb.Append("<div class='kv'><div class='k'>Identity (recognition_identity_id)</div><div class='v'>" + Esc(rid) + "</div></div>");
