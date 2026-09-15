@@ -1,0 +1,1051 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.Wpf;
+
+namespace Recognition.Browser
+{
+    // WBS 5.1 / 5.2 / 5.4 / §5 / §10 / §20 / §24 — governed WebView2 shell.
+    //
+    //   * Multi-tab: each tab's WebView2 lives permanently in one host Grid and is
+    //     shown/hidden by Visibility (a TabControl swaps content visuals and would
+    //     tear down the WebView, so it is templated to a header strip only).
+    //   * All tabs share ONE CoreWebView2Environment => one governed profile tree.
+    //   * Locked-startup preflight (§5/§20) runs once, off the UI thread, fail-closed.
+    //   * Privacy (§5.2): HTTPS-first, no password autosave, no autofill, own start page.
+    //   * Governed history (§24) + bookmarks: append-only hash-chained history and a
+    //     bookmarks store under runtime\ (gitignored + vault-sealable); both feed the
+    //     omnibox and internal pages.
+    //   * Parity: keyboard shortcuts, per-tab zoom, find-in-page, downloads tracking,
+    //     internal recognition: pages (start/history/downloads/bookmarks/settings),
+    //     popups folded into governed tabs.
+    public partial class MainWindow : Window
+    {
+        private readonly string _repoRoot;
+        private readonly string _sessionId = "rb-" + Guid.NewGuid().ToString("N").Substring(0, 12);
+        private readonly DateTime _startedUtc = DateTime.UtcNow;
+
+        private CoreWebView2Environment? _env;
+        private bool _preflightOk;
+        private readonly List<BrowserTab> _tabs = new();
+
+        private GovernedHistory _history = null!;
+        private readonly List<Bookmark> _bookmarks = new();
+        private readonly List<DownloadRec> _downloads = new();
+        private bool _suppressSuggest;
+
+        private const string StartMarker = "recognition:start";
+
+        // Injected into every page: browser owns these accelerators even when the web
+        // content has keyboard focus (WPF InputBindings only fire when chrome is focused).
+        private const string ShortcutScript = @"
+document.addEventListener('keydown',function(e){
+  var k=(e.key||'').toLowerCase(); var m=null;
+  if(e.ctrlKey&&k==='t')m='newtab';
+  else if(e.ctrlKey&&k==='w')m='closetab';
+  else if(e.ctrlKey&&k==='l')m='focusaddr';
+  else if((e.ctrlKey&&k==='r')||k==='f5')m='reload';
+  else if(e.ctrlKey&&k==='f')m='find';
+  else if(e.ctrlKey&&k==='d')m='bookmark';
+  else if(e.ctrlKey&&(k==='='||k==='+'))m='zoomin';
+  else if(e.ctrlKey&&k==='-')m='zoomout';
+  else if(e.ctrlKey&&k==='0')m='zoomreset';
+  else if(e.ctrlKey&&k==='tab')m=e.shiftKey?'prevtab':'nexttab';
+  else if(e.altKey&&k==='arrowleft')m='back';
+  else if(e.altKey&&k==='arrowright')m='forward';
+  if(m){e.preventDefault();window.chrome.webview.postMessage('sc:'+m);}
+},true);";
+
+        private sealed class BrowserTab
+        {
+            public TabItem Item = null!;
+            public WebView2 Web = null!;
+            public TextBlock Header = null!;
+            public readonly List<(string Url, string Title, DateTime Ts)> Visits = new();
+            public string CurrentUrl = StartMarker;
+            public string CurrentTitle = "New tab";
+            public bool Ready;
+            public string Internal = "start";   // "" once a real site loads
+            public bool IsInternal => Internal.Length > 0;
+        }
+
+        public MainWindow()
+        {
+            InitializeComponent();
+            _repoRoot = FindRepoRoot(AppContext.BaseDirectory);
+            Loaded += OnLoaded;
+        }
+
+        private static string FindRepoRoot(string start)
+        {
+            var d = new DirectoryInfo(start);
+            while (d != null)
+            {
+                var s = Path.Combine(d.FullName, "scripts", "recognition_export_session_packet_v1.ps1");
+                if (File.Exists(s)) return d.FullName;
+                d = d.Parent;
+            }
+            return Directory.GetCurrentDirectory();
+        }
+
+        private BrowserTab? Active =>
+            (Tabs.SelectedItem is TabItem ti && ti.Tag is BrowserTab bt) ? bt : null;
+
+        // ---- startup ------------------------------------------------------------
+
+        private async void OnLoaded(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Status("preparing governed profile…");
+                var userData = Path.Combine(_repoRoot, "runtime", "browser_profile");
+                Directory.CreateDirectory(userData);
+
+                _history = new GovernedHistory(Path.Combine(_repoRoot, "runtime", "history.v1.ndjson"));
+                _history.Load();
+                LoadBookmarks();
+                LoadDownloads();
+
+                Status("initializing web engine…");
+                _env = await CoreWebView2Environment.CreateAsync(null, userData, new CoreWebView2EnvironmentOptions());
+
+                Status("verifying locked startup (identity · policy · trust · evidence)…");
+                _preflightOk = await Task.Run(Preflight);
+
+                if (!_preflightOk)
+                {
+                    var locked = await NewTabCoreAsync("Locked");
+                    if (locked != null) locked.Web.CoreWebView2.NavigateToString(LockedHtml());
+                    AddressBar.IsEnabled = GoBtn.IsEnabled = ExportBtn.IsEnabled = false;
+                    BackBtn.IsEnabled = FwdBtn.IsEnabled = ReloadBtn.IsEnabled = NewTabBtn.IsEnabled = StarBtn.IsEnabled = false;
+                    GovText.Text = "LOCKED";
+                    GovText.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
+                    Status("LOCKED: startup verification failed — see page");
+                    return;
+                }
+
+                await OpenNewTabAsync();
+                Status("locked startup OK — governed profile: " + userData);
+            }
+            catch (Exception ex) { ShowFatal("Startup error", ex.ToString()); }
+        }
+
+        // ---- tab lifecycle ------------------------------------------------------
+
+        private async void NewTab_Click(object sender, RoutedEventArgs e) => await OpenNewTabAsync();
+
+        private async Task OpenNewTabAsync()
+        {
+            var tab = await NewTabCoreAsync("New tab");
+            if (tab == null) return;
+            Tabs.SelectedItem = tab.Item;
+            ShowActiveWebView();
+            LoadInternal(tab, "start");
+            AddressBar.Text = "";
+            AddressBar.Focus();
+        }
+
+        private async Task<BrowserTab?> NewTabCoreAsync(string title)
+        {
+            var tab = new BrowserTab();
+            var web = new WebView2 { Visibility = Visibility.Collapsed };
+            tab.Web = web;
+            WebHost.Children.Add(web);
+
+            var panel = new StackPanel { Orientation = Orientation.Horizontal };
+            var hdr = new TextBlock
+            {
+                Text = title, MaxWidth = 190, TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var close = new Button
+            {
+                Content = "✕", Margin = new Thickness(10, 0, 0, 0), Padding = new Thickness(3, 0, 3, 0),
+                BorderThickness = new Thickness(0), Background = Brushes.Transparent,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9F, 0xA9)),
+                ToolTip = "Close tab (Ctrl+W)", Cursor = Cursors.Hand, FontSize = 11
+            };
+            close.Click += (_, __) => CloseTab(tab);
+            panel.Children.Add(hdr);
+            panel.Children.Add(close);
+            tab.Header = hdr;
+
+            tab.Item = new TabItem { Header = panel, Tag = tab };
+            _tabs.Add(tab);
+            Tabs.Items.Add(tab.Item);
+
+            Tabs.SelectedItem = tab.Item;
+            ShowActiveWebView();
+            WebHost.UpdateLayout();
+
+            try { await web.EnsureCoreWebView2Async(_env); }
+            catch (Exception ex)
+            {
+                _tabs.Remove(tab); Tabs.Items.Remove(tab.Item); WebHost.Children.Remove(web);
+                ShowFatal("Web engine failed to initialize",
+                    "The WebView2 runtime could not start.\n\nMost common cause: another Recognition window is still open " +
+                    "and holding the profile (runtime\\browser_profile). Close all Recognition windows and relaunch.\n\n" + ex);
+                return null;
+            }
+
+            var s = web.CoreWebView2.Settings;
+            s.IsPasswordAutosaveEnabled = false;
+            s.IsGeneralAutofillEnabled = false;
+            s.IsStatusBarEnabled = false;
+            s.AreDevToolsEnabled = true;
+
+            web.CoreWebView2.NavigationStarting   += (o, ev) => OnNavStarting(tab, ev);
+            web.CoreWebView2.SourceChanged        += (o, ev) => OnSourceChanged(tab);
+            web.CoreWebView2.NavigationCompleted  += (o, ev) => OnNavCompleted(tab, ev);
+            web.CoreWebView2.DocumentTitleChanged += (o, ev) => { if (!tab.IsInternal) SetHeader(tab, web.CoreWebView2.DocumentTitle); };
+            web.CoreWebView2.WebMessageReceived   += (o, ev) => OnWebMessage(tab, ev);
+            web.CoreWebView2.DownloadStarting     += (o, ev) => OnDownloadStarting(ev);
+            web.CoreWebView2.NewWindowRequested   += OnNewWindowRequested;
+            try { await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(ShortcutScript); } catch { }
+
+            tab.Ready = true;
+            return tab;
+        }
+
+        private void CloseTab(BrowserTab tab)
+        {
+            int idx = _tabs.IndexOf(tab);
+            _tabs.Remove(tab);
+            Tabs.Items.Remove(tab.Item);
+            WebHost.Children.Remove(tab.Web);
+            try { tab.Web.Dispose(); } catch { }
+
+            if (_tabs.Count == 0) { if (_preflightOk) _ = OpenNewTabAsync(); return; }
+            if (Tabs.SelectedItem == null) Tabs.SelectedItem = _tabs[Math.Min(idx, _tabs.Count - 1)].Item;
+            ShowActiveWebView();
+        }
+
+        private void Tabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (!ReferenceEquals(e.OriginalSource, Tabs)) return;
+            ShowActiveWebView();
+            var a = Active; if (a == null) return;
+            SetAddress(a); UpdateStar(a);
+            Status(a.IsInternal ? ("recognition:" + a.Internal)
+                                : $"{a.CurrentTitle}  ({a.Visits.Count} visit(s) this tab)");
+        }
+
+        private void ShowActiveWebView()
+        {
+            var a = Active;
+            foreach (var t in _tabs) t.Web.Visibility = ReferenceEquals(t, a) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void SetHeader(BrowserTab tab, string title)
+        {
+            if (!tab.IsInternal && !string.IsNullOrWhiteSpace(title)) tab.CurrentTitle = title;
+            tab.Header.Text = tab.IsInternal ? InternalTitle(tab.Internal) : tab.CurrentTitle;
+        }
+
+        private static string InternalTitle(string name) => name switch
+        {
+            "start" => "New tab",
+            "history" => "History",
+            "downloads" => "Downloads",
+            "bookmarks" => "Bookmarks",
+            "settings" => "Settings",
+            _ => "Recognition"
+        };
+
+        private void SetAddress(BrowserTab tab)
+        {
+            _suppressSuggest = true;
+            AddressBar.Text = tab.IsInternal ? (tab.Internal == "start" ? "" : "recognition:" + tab.Internal) : tab.CurrentUrl;
+            _suppressSuggest = false;
+        }
+
+        // ---- keyboard shortcuts -------------------------------------------------
+
+        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+            bool alt  = (Keyboard.Modifiers & ModifierKeys.Alt) != 0;
+            string? m = null;
+            if (ctrl && e.Key == Key.T) m = "newtab";
+            else if (ctrl && e.Key == Key.W) m = "closetab";
+            else if (ctrl && e.Key == Key.L) m = "focusaddr";
+            else if ((ctrl && e.Key == Key.R) || e.Key == Key.F5) m = "reload";
+            else if (ctrl && e.Key == Key.F) m = "find";
+            else if (ctrl && e.Key == Key.D) m = "bookmark";
+            else if (ctrl && (e.Key == Key.OemPlus || e.Key == Key.Add)) m = "zoomin";
+            else if (ctrl && (e.Key == Key.OemMinus || e.Key == Key.Subtract)) m = "zoomout";
+            else if (ctrl && (e.Key == Key.D0 || e.Key == Key.NumPad0)) m = "zoomreset";
+            else if (ctrl && e.Key == Key.Tab) m = (Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? "prevtab" : "nexttab";
+            else if (alt && e.Key == Key.Left) m = "back";
+            else if (alt && e.Key == Key.Right) m = "forward";
+            if (m != null) { e.Handled = true; HandleShortcut(m); }
+        }
+
+        private async void HandleShortcut(string m)
+        {
+            var a = Active;
+            switch (m)
+            {
+                case "newtab": await OpenNewTabAsync(); break;
+                case "closetab": if (a != null) CloseTab(a); break;
+                case "focusaddr": AddressBar.Focus(); AddressBar.SelectAll(); break;
+                case "reload": Reload_Click(this, new RoutedEventArgs()); break;
+                case "find": OpenFind(); break;
+                case "bookmark": ToggleBookmark(); break;
+                case "zoomin": Zoom(+0.1); break;
+                case "zoomout": Zoom(-0.1); break;
+                case "zoomreset": Zoom(0); break;
+                case "nexttab": CycleTab(+1); break;
+                case "prevtab": CycleTab(-1); break;
+                case "back": Back_Click(this, new RoutedEventArgs()); break;
+                case "forward": Forward_Click(this, new RoutedEventArgs()); break;
+            }
+        }
+
+        private void CycleTab(int dir)
+        {
+            if (_tabs.Count < 2) return;
+            var a = Active; int i = a == null ? 0 : _tabs.IndexOf(a);
+            i = (i + dir + _tabs.Count) % _tabs.Count;
+            Tabs.SelectedItem = _tabs[i].Item; ShowActiveWebView();
+        }
+
+        private void Zoom(double delta)
+        {
+            var a = Active; if (a == null || !a.Ready) return;
+            try
+            {
+                a.Web.ZoomFactor = delta == 0 ? 1.0 : Math.Clamp(a.Web.ZoomFactor + delta, 0.3, 3.0);
+                Status($"zoom {Math.Round(a.Web.ZoomFactor * 100)}%");
+            }
+            catch { }
+        }
+
+        // ---- find in page -------------------------------------------------------
+
+        private void OpenFind() { FindBar.Visibility = Visibility.Visible; FindBox.Focus(); FindBox.SelectAll(); }
+        private void MenuFind_Click(object sender, RoutedEventArgs e) => OpenFind();
+        private void FindClose_Click(object sender, RoutedEventArgs e) { FindBar.Visibility = Visibility.Collapsed; ClearFind(); }
+        private void FindNext_Click(object sender, RoutedEventArgs e) => DoFind(false);
+        private void FindPrev_Click(object sender, RoutedEventArgs e) => DoFind(true);
+        private void FindBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter) { DoFind((Keyboard.Modifiers & ModifierKeys.Shift) != 0); e.Handled = true; }
+            else if (e.Key == Key.Escape) { FindClose_Click(sender, e); e.Handled = true; }
+        }
+        private async void DoFind(bool backwards)
+        {
+            var a = Active; if (a == null || !a.Ready || a.IsInternal) return;
+            var term = FindBox.Text ?? "";
+            if (term.Length == 0) { ClearFind(); return; }
+            var js = "window.find(" + JsStr(term) + ",false," + (backwards ? "true" : "false") + ",true,false,true,false)";
+            try { await a.Web.CoreWebView2.ExecuteScriptAsync(js); } catch { }
+        }
+        private async void ClearFind()
+        {
+            var a = Active; if (a == null || !a.Ready) return;
+            try { await a.Web.CoreWebView2.ExecuteScriptAsync("window.getSelection && window.getSelection().removeAllRanges()"); } catch { }
+        }
+        private static string JsStr(string s) => "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+
+        // ---- bookmarks ----------------------------------------------------------
+
+        private sealed class Bookmark { public string Url = ""; public string Title = ""; public string Ts = ""; }
+
+        private void LoadBookmarks()
+        {
+            _bookmarks.Clear();
+            var path = BookmarksPath();
+            if (!File.Exists(path)) return;
+            foreach (var line in File.ReadAllLines(path))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try { using var d = JsonDocument.Parse(line); var r = d.RootElement;
+                      _bookmarks.Add(new Bookmark { Url = Get(r, "url"), Title = Get(r, "title"), Ts = Get(r, "ts_utc") }); }
+                catch { }
+            }
+        }
+        private string BookmarksPath() => Path.Combine(_repoRoot, "runtime", "bookmarks.v1.ndjson");
+        private void SaveBookmarks()
+        {
+            var sb = new StringBuilder();
+            foreach (var b in _bookmarks)
+                sb.Append("{" + J("schema") + ":" + J("recognition.bookmark.v1") + "," + J("ts_utc") + ":" + J(b.Ts) + "," +
+                          J("url") + ":" + J(b.Url) + "," + J("title") + ":" + J(b.Title) + "}\n");
+            var path = BookmarksPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
+        }
+        private bool IsBookmarked(string url) => _bookmarks.Any(b => b.Url == url);
+        private void Star_Click(object sender, RoutedEventArgs e) => ToggleBookmark();
+        private void ToggleBookmark()
+        {
+            var a = Active; if (a == null || a.IsInternal || string.IsNullOrEmpty(a.CurrentUrl)) return;
+            if (IsBookmarked(a.CurrentUrl)) { _bookmarks.RemoveAll(b => b.Url == a.CurrentUrl); Status("bookmark removed"); }
+            else { _bookmarks.Add(new Bookmark { Url = a.CurrentUrl, Title = a.CurrentTitle, Ts = Iso(DateTime.UtcNow) }); Status("bookmarked"); }
+            SaveBookmarks(); UpdateStar(a);
+            if (a.Internal == "bookmarks") LoadInternal(a, "bookmarks");
+        }
+        private void UpdateStar(BrowserTab tab)
+        {
+            bool on = !tab.IsInternal && IsBookmarked(tab.CurrentUrl);
+            StarBtn.Content = on ? "★" : "☆";
+            StarBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0xF2, 0xC1, 0x4E) : Color.FromRgb(0xC7, 0xCC, 0xD4));
+            StarBtn.IsEnabled = !tab.IsInternal;
+        }
+
+        // ---- locked startup preflight (worker thread) ---------------------------
+
+        private string _preflightOut = "";
+
+        private bool Preflight()
+        {
+            try
+            {
+                var script = Path.Combine(_repoRoot, "scripts", "recognition_locked_startup_browser_v1.ps1");
+                if (!File.Exists(script)) { _preflightOut = "locked startup script not found: " + script; return false; }
+                var psi = new ProcessStartInfo("pwsh.exe",
+                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\"")
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+                var p = Process.Start(psi);
+                if (p == null) { _preflightOut = "could not start pwsh for preflight"; return false; }
+                _preflightOut = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                return _preflightOut.Contains("RECOGNITION_LOCKED_STARTUP_OK");
+            }
+            catch (Exception ex) { _preflightOut = "preflight error: " + ex.Message; return false; }
+        }
+
+        private string LockedHtml() =>
+            "<html><body style='font-family:Segoe UI,Arial;background:#1e1f22;color:#e8e8e8;padding:48px'>"
+          + "<h1>&#128274; Recognition — Locked</h1>"
+          + "<p>Startup verification failed. Per the runtime laws (&sect;5, &sect;20), the browser will not open until identity, policy, the trust root, and the evidence chain verify.</p>"
+          + "<pre style='background:#111;padding:16px;border-radius:8px;white-space:pre-wrap'>"
+          + System.Net.WebUtility.HtmlEncode(_preflightOut) + "</pre></body></html>";
+
+        private void ShowFatal(string title, string detail)
+        {
+            Status(title);
+            var html = "<html><body style='font-family:Segoe UI,Arial;background:#1e1f22;color:#e8e8e8;padding:48px'>"
+                     + "<h1>&#9888; " + System.Net.WebUtility.HtmlEncode(title) + "</h1>"
+                     + "<pre style='background:#111;padding:16px;border-radius:8px;white-space:pre-wrap'>"
+                     + System.Net.WebUtility.HtmlEncode(detail) + "</pre></body></html>";
+            try { var a = Active; if (a?.Web.CoreWebView2 != null) { a.Web.CoreWebView2.NavigateToString(html); return; } } catch { }
+            MessageBox.Show(this, detail, title, MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
+        // ---- internal pages -----------------------------------------------------
+
+        private void LoadInternal(BrowserTab tab, string name)
+        {
+            tab.Internal = name;
+            tab.CurrentUrl = "recognition:" + name;
+            SetHeader(tab, "");
+            if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); }
+            string html = name switch
+            {
+                "history"   => HistoryHtml(),
+                "downloads" => DownloadsHtml(),
+                "bookmarks" => BookmarksHtml(),
+                "settings"  => SettingsHtml(),
+                _           => StartPageHtml()
+            };
+            try { tab.Web.CoreWebView2.NavigateToString(html); } catch (Exception ex) { Status("page error: " + ex.Message); }
+        }
+
+        private void OpenInternalInActiveTab(string name)
+        {
+            var a = Active; if (a == null) { _ = OpenNewTabAsync(); return; }
+            LoadInternal(a, name);
+        }
+
+        private void Menu_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button b && b.ContextMenu is ContextMenu cm)
+            {
+                cm.PlacementTarget = b;
+                cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+                cm.MinWidth = 240;
+                cm.HorizontalOffset = b.ActualWidth - 240;
+                cm.VerticalOffset = 4;
+                cm.IsOpen = true;
+            }
+        }
+        private async void MenuNewTab_Click(object sender, RoutedEventArgs e) => await OpenNewTabAsync();
+        private void MenuHistory_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("history");
+        private void MenuDownloads_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("downloads");
+        private void MenuBookmarks_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("bookmarks");
+        private void MenuSettings_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("settings");
+        private void MenuZoomIn_Click(object sender, RoutedEventArgs e) => Zoom(+0.1);
+        private void MenuZoomOut_Click(object sender, RoutedEventArgs e) => Zoom(-0.1);
+        private void MenuZoomReset_Click(object sender, RoutedEventArgs e) => Zoom(0);
+
+        // ---- page HTML ----------------------------------------------------------
+
+        private const string PageHead =
+            "<!doctype html><html><head><meta charset='utf-8'><style>" +
+            "html,body{margin:0;height:100%}" +
+            "body{font-family:'Segoe UI',Arial,sans-serif;background:#191c22;color:#e8e8e8}" +
+            ".wrap{max-width:900px;margin:0 auto;padding:38px 28px}" +
+            "h1{font-size:22px;font-weight:600;margin:0 0 4px}" +
+            ".muted{color:#7f8794;font-size:12.5px;margin-bottom:22px}" +
+            ".row{display:flex;justify-content:space-between;gap:16px;padding:11px 14px;border:1px solid #262b34;" +
+            "border-radius:9px;margin-bottom:8px;background:#1e222a}" +
+            ".row .t{color:#e8e8e8;font-size:13.5px;text-decoration:none}" +
+            ".row .u{color:#6d7480;font-size:11.5px}" +
+            ".row .ts{color:#5b626d;font-size:11px;white-space:nowrap}" +
+            ".empty{color:#6d7480;padding:40px;text-align:center}" +
+            ".btn{display:inline-block;border:1px solid #2b6cb0;background:#2b6cb0;color:#fff;border-radius:7px;" +
+            "padding:8px 14px;font-size:13px;cursor:pointer;text-decoration:none}" +
+            ".btn.ghost{background:transparent;border-color:#333844;color:#c7ccd4}" +
+            ".kv{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid #23272f}" +
+            ".kv .k{color:#8a909b;width:200px;font-size:12.5px}.kv .v{color:#e8e8e8;font-size:12.5px;word-break:break-all}" +
+            ".pill{display:inline-block;border:1px solid #2c7a4b;background:#16351f;color:#7fd6a0;border-radius:999px;padding:3px 10px;font-size:11px;margin-right:6px}" +
+            "a{color:#6aa9e9}</style></head><body><div class='wrap'>";
+        private const string PageFoot = "</div></body></html>";
+
+        private static string StartPageHtml()
+        {
+            return @"<!doctype html><html><head><meta charset='utf-8'><title>Recognition — Start</title><style>
+html,body{height:100%;margin:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#242833,#191c22 60%);
+     color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.logo{font-size:44px;line-height:1}
+h1{font-weight:600;letter-spacing:.5px;margin:14px 0 2px;font-size:26px}
+.sub{color:#7f8794;margin-bottom:30px;font-size:12.5px}
+form{display:flex;width:min(640px,82vw);box-shadow:0 8px 30px rgba(0,0,0,.35);border-radius:10px}
+input{flex:1;padding:15px 18px;border:1px solid #333844;border-right:none;border-radius:10px 0 0 10px;
+      background:#0e1116;color:#e8e8e8;font-size:15px;outline:none}
+input::placeholder{color:#5c626d}
+button{padding:0 26px;border:1px solid #2b6cb0;border-radius:0 10px 10px 0;background:#2b6cb0;color:#fff;font-size:15px;cursor:pointer}
+button:hover{background:#3480ce}
+.pills{margin-top:26px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.pill{border:1px solid #2c313b;background:#1c2027;color:#9aa1ac;border-radius:999px;padding:6px 12px;font-size:11.5px}
+.foot{position:fixed;bottom:18px;color:#4f545e;font-size:11px}
+</style></head><body>
+<div class='logo'>&#128274;</div><h1>Recognition</h1>
+<div class='sub'>Governed browser &middot; identity-bound &middot; deterministic evidence</div>
+<form id='f'><input id='q' autofocus autocomplete='off' spellcheck='false' placeholder='Search DuckDuckGo or type a URL'>
+<button type='submit'>Search</button></form>
+<div class='pills'><span class='pill'>HTTPS-first</span><span class='pill'>No autofill</span>
+<span class='pill'>No telemetry</span><span class='pill'>Session &rarr; governed packet</span></div>
+<div class='foot'>every session is exportable as a signed, hash-chained evidence packet</div>
+<script>
+document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();
+var v=(document.getElementById('q').value||'').trim();if(!v)return;
+if(/^[a-z][a-z0-9+.\-]*:\/\//i.test(v)){location.href=v;}
+else if(v.indexOf('.')>-1&&v.indexOf(' ')===-1){location.href='https://'+v;}
+else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
+</script></body></html>";
+        }
+
+        private string HistoryHtml()
+        {
+            var sb = new StringBuilder(PageHead);
+            sb.Append("<title>History</title><h1>History</h1>");
+            sb.Append("<div class='muted'>Governed, append-only, hash-chained &mdash; " + _history.Items.Count +
+                      " entr" + (_history.Items.Count == 1 ? "y" : "ies") +
+                      ". <a class='btn ghost' onclick=\"send('clear-history')\">Clear history</a></div>");
+            if (_history.Items.Count == 0) sb.Append("<div class='empty'>No history yet.</div>");
+            else
+                foreach (var h in Enumerable.Reverse(_history.Items).Take(500))
+                    sb.Append("<div class='row'><div><a class='t' href='" + Attr(h.Url) + "'>" + Esc(string.IsNullOrEmpty(h.Title) ? h.Url : h.Title) +
+                              "</a><div class='u'>" + Esc(h.Url) + "</div></div><div class='ts'>" + Esc(h.Ts) + "</div></div>");
+            sb.Append(SendScript()).Append(PageFoot);
+            return sb.ToString();
+        }
+
+        private string BookmarksHtml()
+        {
+            var sb = new StringBuilder(PageHead);
+            sb.Append("<title>Bookmarks</title><h1>Bookmarks</h1><div class='muted'>Saved in runtime\\bookmarks.v1.ndjson &mdash; " +
+                      _bookmarks.Count + " saved.</div>");
+            if (_bookmarks.Count == 0) sb.Append("<div class='empty'>No bookmarks yet. Click the &#9734; in the address bar to save a page.</div>");
+            else
+                foreach (var b in Enumerable.Reverse(_bookmarks))
+                    sb.Append("<div class='row'><div><a class='t' href='" + Attr(b.Url) + "'>" + Esc(string.IsNullOrEmpty(b.Title) ? b.Url : b.Title) +
+                              "</a><div class='u'>" + Esc(b.Url) + "</div></div>" +
+                              "<div class='ts'><a class='btn ghost' onclick=\"send('rmbookmark:" + Attr(b.Url) + "')\">Remove</a></div></div>");
+            sb.Append(SendScript()).Append(PageFoot);
+            return sb.ToString();
+        }
+
+        private string DownloadsHtml()
+        {
+            var sb = new StringBuilder(PageHead);
+            sb.Append("<title>Downloads</title><h1>Downloads</h1><div class='muted'>Tracked in runtime\\downloads.v1.ndjson.</div>");
+            if (_downloads.Count == 0) sb.Append("<div class='empty'>No downloads yet.</div>");
+            else
+                foreach (var d in Enumerable.Reverse(_downloads).Take(500))
+                    sb.Append("<div class='row'><div><div class='t'>" + Esc(Path.GetFileName(d.Path)) + "  <span class='u'>[" + Esc(d.State) + "]</span></div>" +
+                              "<div class='u'>" + Esc(d.Path) + "</div><div class='u'>" + Esc(d.Url) + "</div></div><div class='ts'>" + Esc(d.Ts) + "</div></div>");
+            sb.Append(SendScript()).Append(PageFoot);
+            return sb.ToString();
+        }
+
+        private string SettingsHtml()
+        {
+            var (rid, idPath) = ReadIdentityId();
+            var profile = Path.Combine(_repoRoot, "runtime", "browser_profile");
+            var sb = new StringBuilder(PageHead);
+            sb.Append("<title>Settings</title><h1>Settings</h1><div class='muted'>Governance is enforced by the runtime laws, not toggled here.</div>");
+            sb.Append("<div style='margin-bottom:18px'><span class='pill'>HTTPS-first</span><span class='pill'>No password autosave</span>" +
+                      "<span class='pill'>No general autofill</span><span class='pill'>No telemetry</span></div>");
+            sb.Append("<div class='kv'><div class='k'>Identity (recognition_identity_id)</div><div class='v'>" + Esc(rid) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Identity descriptor</div><div class='v'>" + Esc(idPath) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Session id</div><div class='v'>" + Esc(_sessionId) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Governed profile</div><div class='v'>" + Esc(profile) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Repo root</div><div class='v'>" + Esc(_repoRoot) + "</div></div>");
+            sb.Append("<div style='margin-top:22px;display:flex;gap:10px;flex-wrap:wrap'>" +
+                      "<a class='btn' onclick=\"send('export-session')\">Export Session</a>" +
+                      "<a class='btn ghost' onclick=\"send('open-profile')\">Open profile folder</a>" +
+                      "<a class='btn ghost' onclick=\"send('open-packets')\">Open packets folder</a>" +
+                      "<a class='btn ghost' onclick=\"send('clear-history')\">Clear history</a></div>");
+            sb.Append(SendScript()).Append(PageFoot);
+            return sb.ToString();
+        }
+
+        private static string SendScript() =>
+            "<script>function send(c){window.chrome.webview.postMessage(c);}" +
+            "document.addEventListener('click',function(e){var a=e.target.closest('a.t');" +
+            "if(a){e.preventDefault();window.chrome.webview.postMessage('open:'+a.getAttribute('href'));}});</script>";
+
+        private void OnWebMessage(BrowserTab tab, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            string msg;
+            try { msg = e.TryGetWebMessageAsString(); } catch { return; }
+            if (string.IsNullOrEmpty(msg)) return;
+
+            if (msg.StartsWith("sc:")) { HandleShortcut(msg.Substring(3)); return; }
+            if (msg.StartsWith("open:")) { NavigateTab(tab, msg.Substring(5)); return; }
+            if (msg.StartsWith("rmbookmark:"))
+            {
+                var url = msg.Substring("rmbookmark:".Length);
+                _bookmarks.RemoveAll(b => b.Url == url); SaveBookmarks();
+                if (tab.Internal == "bookmarks") LoadInternal(tab, "bookmarks");
+                var a = Active; if (a != null) UpdateStar(a);
+                return;
+            }
+            switch (msg)
+            {
+                case "clear-history":
+                    _history.Clear();
+                    if (tab.Internal is "history" or "settings") LoadInternal(tab, tab.Internal);
+                    Status("history cleared");
+                    break;
+                case "export-session": Export_Click(this, new RoutedEventArgs()); break;
+                case "open-profile": OpenFolder(Path.Combine(_repoRoot, "runtime", "browser_profile")); break;
+                case "open-packets": OpenFolder(Path.Combine(_repoRoot, "packets")); break;
+            }
+        }
+
+        private void OpenFolder(string path)
+        {
+            try { Directory.CreateDirectory(path); Process.Start(new ProcessStartInfo("explorer.exe", "\"" + path + "\"") { UseShellExecute = true }); }
+            catch (Exception ex) { Status("open folder error: " + ex.Message); }
+        }
+
+        // ---- downloads ----------------------------------------------------------
+
+        private sealed class DownloadRec { public string Url = ""; public string Path = ""; public string State = ""; public string Ts = ""; }
+
+        private void OnDownloadStarting(CoreWebView2DownloadStartingEventArgs e)
+        {
+            try
+            {
+                var op = e.DownloadOperation;
+                var rec = new DownloadRec { Url = op.Uri, Path = op.ResultFilePath, State = op.State.ToString(), Ts = Iso(DateTime.UtcNow) };
+                _downloads.Add(rec);
+                AppendDownload(rec);
+                Status("download started: " + System.IO.Path.GetFileName(rec.Path));
+                op.StateChanged += (o, __) => Dispatcher.Invoke(() =>
+                {
+                    rec.State = op.State.ToString(); rec.Path = op.ResultFilePath; AppendDownload(rec);
+                    var a = Active; if (a != null && a.Internal == "downloads") LoadInternal(a, "downloads");
+                });
+            }
+            catch (Exception ex) { Status("download error: " + ex.Message); }
+        }
+
+        private void LoadDownloads()
+        {
+            _downloads.Clear();
+            var path = Path.Combine(_repoRoot, "runtime", "downloads.v1.ndjson");
+            if (!File.Exists(path)) return;
+            foreach (var line in File.ReadAllLines(path))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try { using var d = JsonDocument.Parse(line); var r = d.RootElement;
+                      _downloads.Add(new DownloadRec { Url = Get(r, "url"), Path = Get(r, "path"), State = Get(r, "state"), Ts = Get(r, "ts_utc") }); }
+                catch { }
+            }
+        }
+
+        private void AppendDownload(DownloadRec r)
+        {
+            var path = Path.Combine(_repoRoot, "runtime", "downloads.v1.ndjson");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var line = "{" + J("schema") + ":" + J("recognition.download.v1") + "," + J("ts_utc") + ":" + J(r.Ts) + "," +
+                       J("url") + ":" + J(r.Url) + "," + J("path") + ":" + J(r.Path) + "," + J("state") + ":" + J(r.State) + "}\n";
+            File.AppendAllText(path, line, new UTF8Encoding(false));
+        }
+
+        private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
+        {
+            e.Handled = true;   // no OS popups — fold into a governed tab
+            var uri = e.Uri;
+            _ = Dispatcher.InvokeAsync(async () =>
+            {
+                var t = await NewTabCoreAsync("New tab");
+                if (t == null) return;
+                Tabs.SelectedItem = t.Item; ShowActiveWebView();
+                NavigateTab(t, uri);
+            });
+        }
+
+        // ---- navigation ---------------------------------------------------------
+
+        private void OnNavStarting(BrowserTab tab, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (e.Uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !e.Uri.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase) &&
+                !e.Uri.StartsWith("http://127.0.0.1", StringComparison.OrdinalIgnoreCase))
+            {
+                e.Cancel = true;
+                NavigateTab(tab, "https://" + e.Uri.Substring("http://".Length));
+                return;
+            }
+            if (e.Uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                e.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                tab.Internal = "";
+            if (ReferenceEquals(tab, Active)) Status("loading…");
+        }
+
+        private void OnSourceChanged(BrowserTab tab)
+        {
+            if (tab.IsInternal) return;
+            var src = tab.Web.CoreWebView2.Source;
+            if (src.StartsWith("data:") || src.StartsWith("about:")) return;
+            tab.CurrentUrl = src;
+            if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); }
+        }
+
+        private void OnNavCompleted(BrowserTab tab, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            if (!e.IsSuccess) { if (ReferenceEquals(tab, Active)) Status("navigation failed"); return; }
+            var url = tab.Web.CoreWebView2.Source;
+            if (tab.IsInternal || url.StartsWith("data:") || url.StartsWith("about:")) return;
+
+            var title = tab.Web.CoreWebView2.DocumentTitle ?? "";
+            tab.CurrentUrl = url; tab.CurrentTitle = title;
+            tab.Visits.Add((url, title, DateTime.UtcNow));
+            _history.Append(url, title);
+            SetHeader(tab, title);
+            if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); Status($"visited {TotalVisits()}: {title}"); }
+        }
+
+        private int TotalVisits() { int n = 0; foreach (var t in _tabs) n += t.Visits.Count; return n; }
+
+        private void NavigateTab(BrowserTab tab, string input)
+        {
+            if (!tab.Ready) return;
+            input = (input ?? "").Trim();
+            if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
+            {
+                var name = input.Substring("recognition:".Length).ToLowerInvariant();
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "start" ? name : "start");
+                return;
+            }
+            tab.Internal = "";
+            try { tab.Web.CoreWebView2.Navigate(ToUrl(input)); } catch (Exception ex) { Status("nav error: " + ex.Message); }
+        }
+
+        private static string ToUrl(string input)
+        {
+            input = (input ?? "").Trim();
+            if (input.Length == 0) return "https://duckduckgo.com/";
+            if (Regex.IsMatch(input, @"^[a-zA-Z][a-zA-Z0-9+.\-]*://")) return input;
+            if (input.Contains('.') && !input.Contains(' ')) return "https://" + input;
+            return "https://duckduckgo.com/?q=" + Uri.EscapeDataString(input);
+        }
+
+        private void Back_Click(object sender, RoutedEventArgs e){ var a=Active; if(a!=null && a.Ready && a.Web.CoreWebView2.CanGoBack) a.Web.CoreWebView2.GoBack(); }
+        private void Forward_Click(object sender, RoutedEventArgs e){ var a=Active; if(a!=null && a.Ready && a.Web.CoreWebView2.CanGoForward) a.Web.CoreWebView2.GoForward(); }
+        private void Reload_Click(object sender, RoutedEventArgs e){ var a=Active; if(a!=null && a.Ready){ if(a.IsInternal) LoadInternal(a,a.Internal); else a.Web.CoreWebView2.Reload(); } }
+        private void Go_Click(object sender, RoutedEventArgs e){ HideSuggest(); var a=Active; if(a!=null) NavigateTab(a, AddressBar.Text); }
+
+        // ---- omnibox suggestions ------------------------------------------------
+
+        public sealed class Suggestion
+        {
+            public string Icon { get; set; } = "";
+            public string Primary { get; set; } = "";
+            public string Secondary { get; set; } = "";
+            public string Target { get; set; } = "";
+        }
+
+        private void Address_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_suppressSuggest) return;
+            var q = AddressBar.Text.Trim();
+            if (q.Length == 0) { HideSuggest(); return; }
+            var items = BuildSuggestions(q);
+            SuggestList.ItemsSource = items;
+            if (items.Count > 0) { SuggestList.SelectedIndex = -1; SuggestPopup.IsOpen = true; } else HideSuggest();
+        }
+
+        private List<Suggestion> BuildSuggestions(string q)
+        {
+            var list = new List<Suggestion>();
+            bool looksUrl = Regex.IsMatch(q, @"^[a-zA-Z][a-zA-Z0-9+.\-]*://") || (q.Contains('.') && !q.Contains(' '));
+            if (looksUrl) list.Add(new Suggestion { Icon = "→", Primary = q, Secondary = "Open site", Target = q });
+            list.Add(new Suggestion { Icon = "\U0001F50D", Primary = q, Secondary = "Search DuckDuckGo", Target = "ddg:" + q });
+
+            var seen = new HashSet<string>();
+            foreach (var b in _bookmarks)
+            {
+                if (list.Count >= 9) break;
+                if (string.IsNullOrEmpty(b.Url) || !seen.Add(b.Url)) continue;
+                if (Match(q, b.Url, b.Title))
+                    list.Add(new Suggestion { Icon = "★", Primary = string.IsNullOrEmpty(b.Title) ? b.Url : b.Title, Secondary = b.Url, Target = b.Url });
+            }
+            foreach (var h in Enumerable.Reverse(_history.Items))
+            {
+                if (list.Count >= 9) break;
+                if (string.IsNullOrEmpty(h.Url) || !seen.Add(h.Url)) continue;
+                if (Match(q, h.Url, h.Title))
+                    list.Add(new Suggestion { Icon = "↺", Primary = string.IsNullOrEmpty(h.Title) ? h.Url : h.Title, Secondary = h.Url, Target = h.Url });
+            }
+            return list;
+        }
+        private static bool Match(string q, string url, string title) =>
+            (url ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+            (title ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0;
+
+        private void AcceptSuggestion(Suggestion s)
+        {
+            HideSuggest();
+            var a = Active; if (a == null) return;
+            if (s.Target.StartsWith("ddg:")) NavigateTab(a, "https://duckduckgo.com/?q=" + Uri.EscapeDataString(s.Target.Substring(4)));
+            else NavigateTab(a, s.Target);
+        }
+
+        private void Suggest_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (SuggestList.SelectedItem is Suggestion s) AcceptSuggestion(s);
+            else if ((e.OriginalSource as FrameworkElement)?.DataContext is Suggestion s2) AcceptSuggestion(s2);
+        }
+
+        private void Address_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (SuggestPopup.IsOpen && SuggestList.Items.Count > 0)
+            {
+                if (e.Key == Key.Down) { SuggestList.SelectedIndex = Math.Min(SuggestList.SelectedIndex + 1, SuggestList.Items.Count - 1); e.Handled = true; return; }
+                if (e.Key == Key.Up)   { SuggestList.SelectedIndex = Math.Max(SuggestList.SelectedIndex - 1, 0); e.Handled = true; return; }
+                if (e.Key == Key.Escape) { HideSuggest(); e.Handled = true; return; }
+            }
+            if (e.Key == Key.Enter)
+            {
+                if (SuggestPopup.IsOpen && SuggestList.SelectedItem is Suggestion s) AcceptSuggestion(s);
+                else { HideSuggest(); var a = Active; if (a != null) NavigateTab(a, AddressBar.Text); }
+                e.Handled = true;
+            }
+        }
+
+        private void Address_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (!_suppressSuggest && AddressBar.Text.Trim().Length > 0) Address_TextChanged(sender, null!);
+        }
+        private void Address_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (SuggestPopup.IsOpen && (SuggestList.IsMouseOver || SuggestPopup.IsMouseOver)) return;
+            HideSuggest();
+        }
+        private void HideSuggest() { SuggestPopup.IsOpen = false; }
+
+        // ---- session export (5.4) ----------------------------------------------
+
+        private void Export_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dir = Path.Combine(_repoRoot, "payload", "session_export");
+                Directory.CreateDirectory(dir);
+                int total = TotalVisits();
+
+                WriteLf(Path.Combine(dir, "session.json"),
+                    "{" + J("schema") + ":" + J("recognition.session.v1") + "," + J("session_id") + ":" + J(_sessionId) + "," +
+                          J("started_utc") + ":" + J(Iso(_startedUtc)) + "," + J("exported_utc") + ":" + J(Iso(DateTime.UtcNow)) + "," +
+                          J("tab_count") + ":" + _tabs.Count + "," + J("visit_count") + ":" + total + "}");
+
+                var tb = new StringBuilder("{" + J("schema") + ":" + J("recognition.tabs.v1") + "," + J("tabs") + ":[");
+                for (int i = 0; i < _tabs.Count; i++)
+                {
+                    var t = _tabs[i];
+                    var url = t.IsInternal ? ("recognition:" + t.Internal) : t.CurrentUrl;
+                    if (i > 0) tb.Append(",");
+                    tb.Append("{" + J("index") + ":" + i + "," + J("url_sha256") + ":" + J(Sha256Hex(url)) + "," +
+                              J("title") + ":" + J(t.IsInternal ? InternalTitle(t.Internal) : t.CurrentTitle) + "," +
+                              J("internal") + ":" + (t.IsInternal ? "true" : "false") + "}");
+                }
+                tb.Append("]}");
+                WriteLf(Path.Combine(dir, "tabs.json"), tb.ToString());
+
+                var sb = new StringBuilder(); int seq = 0;
+                for (int i = 0; i < _tabs.Count; i++)
+                    foreach (var v in _tabs[i].Visits)
+                    {
+                        seq++;
+                        sb.Append("{" + J("seq") + ":" + seq + "," + J("tab_index") + ":" + i + "," + J("ts_utc") + ":" + J(Iso(v.Ts)) + "," +
+                                  J("type") + ":" + J("navigation") + "," + J("url_sha256") + ":" + J(Sha256Hex(v.Url)) + "," + J("title") + ":" + J(v.Title) + "}\n");
+                    }
+                WriteLf(Path.Combine(dir, "events.ndjson"), sb.ToString());
+
+                WriteLf(Path.Combine(dir, "vpn_state.json"),
+                    "{" + J("schema") + ":" + J("recognition.vpn_state.v1") + "," + J("connected") + ":false," +
+                          J("provider") + ":null," + J("exit_region") + ":null," + J("since_utc") + ":null," + J("policy") + ":" + J("canonical") + "}");
+
+                var script = Path.Combine(_repoRoot, "scripts", "recognition_export_session_packet_v1.ps1");
+                var psi = new ProcessStartInfo("powershell.exe",
+                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\"")
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+                var p = Process.Start(psi)!;
+                string outp = p.StandardOutput.ReadToEnd(); string err = p.StandardError.ReadToEnd(); p.WaitForExit();
+
+                var m = Regex.Match(outp, @"EXPORT_OK:\s*(?<d>.+)");
+                if (m.Success)
+                {
+                    var pkt = m.Groups["d"].Value.Trim();
+                    Status("Exported governed packet: " + Path.GetFileName(pkt));
+                    MessageBox.Show(this, "Session exported as a governed evidence packet:\n\n" + pkt,
+                        "Recognition — Export", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    Status("Export failed");
+                    MessageBox.Show(this, "Export failed.\n\nSTDOUT:\n" + outp + "\n\nSTDERR:\n" + err,
+                        "Recognition — Export", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex) { Status("export error: " + ex.Message); }
+        }
+
+        // ---- identity read ------------------------------------------------------
+
+        private (string rid, string path) ReadIdentityId()
+        {
+            var path = Path.Combine(_repoRoot, "proofs", "identity", "identity.json");
+            try
+            {
+                if (File.Exists(path))
+                {
+                    using var doc = JsonDocument.Parse(File.ReadAllText(path));
+                    if (doc.RootElement.TryGetProperty("recognition_identity_id", out var v))
+                        return (v.GetString() ?? "(unset)", path);
+                }
+            }
+            catch { }
+            return ("(not established yet)", path);
+        }
+
+        // ---- helpers ------------------------------------------------------------
+
+        private static string Get(JsonElement r, string k) => r.TryGetProperty(k, out var v) ? (v.GetString() ?? "") : "";
+        private static string Sha256Hex(string s)
+        {
+            var h = SHA256.HashData(Encoding.UTF8.GetBytes(s ?? ""));
+            var sb = new StringBuilder(); foreach (var b in h) sb.Append(b.ToString("x2")); return sb.ToString();
+        }
+        private static string Iso(DateTime t) => t.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+        private static string J(string s) => "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        private static string Esc(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+        private static string Attr(string s) => System.Net.WebUtility.HtmlEncode(s ?? "").Replace("'", "&#39;");
+        private static void WriteLf(string path, string text)
+        {
+            text = (text ?? "").Replace("\r\n", "\n").Replace("\r", "\n");
+            if (!text.EndsWith("\n")) text += "\n";
+            File.WriteAllText(path, text, new UTF8Encoding(false));
+        }
+        private void Status(string s) => StatusText.Text = s;
+
+        // ---- governed, append-only, hash-chained history (§24) ------------------
+
+        private sealed class GovernedHistory
+        {
+            public sealed class Item { public int Seq; public string Ts = ""; public string Url = ""; public string Title = ""; }
+            public readonly List<Item> Items = new();
+            private readonly string _path;
+            private string _head = new string('0', 64);
+            private static readonly UTF8Encoding Enc = new(false);
+
+            public GovernedHistory(string path) { _path = path; }
+
+            public void Load()
+            {
+                Items.Clear(); _head = new string('0', 64);
+                if (!File.Exists(_path)) return;
+                foreach (var line in File.ReadAllLines(_path))
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line);
+                        var r = doc.RootElement;
+                        Items.Add(new Item
+                        {
+                            Seq = r.TryGetProperty("seq", out var sq) ? sq.GetInt32() : Items.Count + 1,
+                            Ts = GetS(r, "ts_utc"), Url = GetS(r, "url"), Title = GetS(r, "title")
+                        });
+                        if (r.TryGetProperty("hash", out var hv)) _head = hv.GetString() ?? _head;
+                    }
+                    catch { }
+                }
+            }
+
+            public void Append(string url, string title)
+            {
+                if (string.IsNullOrEmpty(url)) return;
+                var seq = Items.Count + 1;
+                var ts = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                var body = "{" + JJ("seq") + ":" + seq + "," + JJ("ts_utc") + ":" + JJ(ts) + "," +
+                           JJ("url") + ":" + JJ(url) + "," + JJ("title") + ":" + JJ(title ?? "") + "," + JJ("prev_hash") + ":" + JJ(_head) + "}";
+                var hash = HashHex(body);
+                var line = body.Substring(0, body.Length - 1) + "," + JJ("hash") + ":" + JJ(hash) + "}\n";
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+                    File.AppendAllText(_path, line, Enc);
+                    _head = hash;
+                    Items.Add(new Item { Seq = seq, Ts = ts, Url = url, Title = title ?? "" });
+                }
+                catch { }
+            }
+
+            public void Clear()
+            {
+                try { if (File.Exists(_path)) File.Delete(_path); } catch { }
+                Items.Clear(); _head = new string('0', 64);
+            }
+
+            private static string HashHex(string s)
+            {
+                var h = SHA256.HashData(Enc.GetBytes(s));
+                var sb = new StringBuilder(); foreach (var b in h) sb.Append(b.ToString("x2")); return sb.ToString();
+            }
+            private static string JJ(string s) => "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+            private static string GetS(JsonElement r, string k) => r.TryGetProperty(k, out var v) ? (v.GetString() ?? "") : "";
+        }
+    }
+}

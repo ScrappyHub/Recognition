@@ -45,6 +45,21 @@ foreach($rel in @(
   "_lib_recognition_launch_v1.ps1",
   "recognition_launch_governed_v1.ps1",
   "_selftest_recognition_launch_v1.ps1",
+  "recognition_govern_installed_v1.ps1",
+  "recognition_cdp_capture_v1.ps1",
+  "recognition_v1.ps1",
+  "_lib_recognition_history_v1.ps1",
+  "recognition_history_v1.ps1",
+  "_selftest_recognition_history_v1.ps1",
+  "_lib_recognition_chain_anchor_v1.ps1",
+  "recognition_chain_anchor_v1.ps1",
+  "_selftest_recognition_chain_anchor_v1.ps1",
+  "_lib_recognition_identity_v1.ps1",
+  "recognition_identity_v1.ps1",
+  "_selftest_recognition_identity_v1.ps1",
+  "recognition_locked_startup_browser_v1.ps1",
+  "RUN_RELEASE_GATE_V1.ps1",
+  "RUN_PACKAGE_DIST_V1.ps1",
   "_selftest_recognition_vault_v1.ps1"
 )){
   ParseGate (Join-Path $ScriptsDir $rel)
@@ -85,6 +100,39 @@ if($lgOut -notmatch [regex]::Escape("SELFTEST_RECOGNITION_LAUNCH_V1_OK")){
   throw "RUNNER_TOKEN_MISSING[launch_v1]: SELFTEST_RECOGNITION_LAUNCH_V1_OK"
 }
 Write-Host "RUNNER_OK: launch_v1" -ForegroundColor Green
+
+# --- history engine selftest (append-only chain, no browser) ---
+Write-Host "=== history_v1 selftest ===" -ForegroundColor Cyan
+$hLog = Join-Path ([System.IO.Path]::GetTempPath()) ("hist_selftest_" + [Guid]::NewGuid().ToString('N') + ".log")
+& (Join-Path $ScriptsDir "_selftest_recognition_history_v1.ps1") *>&1 | Tee-Object -FilePath $hLog | Out-Host
+$hOut = if(Test-Path -LiteralPath $hLog){ Get-Content -Raw -LiteralPath $hLog } else { "" }
+Remove-Item -LiteralPath $hLog -Force -ErrorAction SilentlyContinue
+if($hOut -notmatch [regex]::Escape("SELFTEST_RECOGNITION_HISTORY_V1_OK")){
+  throw "RUNNER_TOKEN_MISSING[history_v1]: SELFTEST_RECOGNITION_HISTORY_V1_OK"
+}
+Write-Host "RUNNER_OK: history_v1" -ForegroundColor Green
+
+# --- chain head anchor selftest (CHAIN-1: truncation/rebuild detection) ---
+Write-Host "=== chain_anchor_v1 selftest ===" -ForegroundColor Cyan
+$caLog = Join-Path ([System.IO.Path]::GetTempPath()) ("ca_selftest_" + [Guid]::NewGuid().ToString('N') + ".log")
+& (Join-Path $ScriptsDir "_selftest_recognition_chain_anchor_v1.ps1") *>&1 | Tee-Object -FilePath $caLog | Out-Host
+$caOut = if(Test-Path -LiteralPath $caLog){ Get-Content -Raw -LiteralPath $caLog } else { "" }
+Remove-Item -LiteralPath $caLog -Force -ErrorAction SilentlyContinue
+if($caOut -notmatch [regex]::Escape("SELFTEST_RECOGNITION_CHAIN_ANCHOR_V1_OK")){
+  throw "RUNNER_TOKEN_MISSING[chain_anchor_v1]: SELFTEST_RECOGNITION_CHAIN_ANCHOR_V1_OK"
+}
+Write-Host "RUNNER_OK: chain_anchor_v1" -ForegroundColor Green
+
+# --- identity receipt chain selftest (WBS 4.1, self-contained, no NeverLost) ---
+Write-Host "=== identity_v1 selftest ===" -ForegroundColor Cyan
+$idLog = Join-Path ([System.IO.Path]::GetTempPath()) ("id_selftest_" + [Guid]::NewGuid().ToString('N') + ".log")
+& (Join-Path $ScriptsDir "_selftest_recognition_identity_v1.ps1") *>&1 | Tee-Object -FilePath $idLog | Out-Host
+$idOut = if(Test-Path -LiteralPath $idLog){ Get-Content -Raw -LiteralPath $idLog } else { "" }
+Remove-Item -LiteralPath $idLog -Force -ErrorAction SilentlyContinue
+if($idOut -notmatch [regex]::Escape("SELFTEST_RECOGNITION_IDENTITY_V1_OK")){
+  throw "RUNNER_TOKEN_MISSING[identity_v1]: SELFTEST_RECOGNITION_IDENTITY_V1_OK"
+}
+Write-Host "RUNNER_OK: identity_v1" -ForegroundColor Green
 
 # --- publish scan gate (read-only) ---
 Write-Host "=== publish scan ===" -ForegroundColor Cyan

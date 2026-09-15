@@ -1,0 +1,17 @@
+{
+  "schema": "recognition.policy.overlay.v1",
+  "pack": "overlay.example",
+  "version": 1,
+  "base": "canonical",
+  "description": "Example overlay that TIGHTENS the canonical pack (overlays may only make policy stricter). Copy and adapt per deployment.",
+  "network": {
+    "block_plain_http": true
+  },
+  "vpn": {
+    "required": true
+  },
+  "extensions": {
+    "load_only": "allow",
+    "review_is_blocking": true
+  }
+}

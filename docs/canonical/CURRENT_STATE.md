@@ -1,0 +1,89 @@
+# Recognition — Current State (living DoD scoreboard)
+
+Version: Current State v1
+Tracks: Canonical Handoff v1 (§31 proven status, §32 remaining systems)
+Updated: 2026-09-15
+
+## Definition of Done (derived from the spec)
+
+The handoff has no separate DoD; §31's ✓ pattern **is** the definition, governed by
+§2 (laws) and §15 (verification). A system counts as DONE only when it is:
+
+1. **Deterministic** — same inputs produce identical bytes/hashes.
+2. **Encrypted at rest** — persistent state is AES-256-GCM ciphertext; no plaintext
+   secrets, and nothing meaningful survives shutdown outside the vault (§7, §8).
+3. **Receipted** — every meaningful operation appends to an append-only receipt stream.
+4. **Verifiable with negative vectors** — ships a verifier proving §15 (nothing
+   modified, missing, reordered, or forged), and a selftest that includes tamper /
+   wrong-key / reorder / missing cases, not just the happy path.
+5. **Green token** — emits a stable `..._OK` token, and is wired into `prove_all`.
+
+`scripts/recognition_prove_all_v1.ps1` aggregates every verifier into one
+`proof_hash` receipt; a system is not "done" until it is a mandatory component there.
+
+## Status legend
+
+- **DONE** — meets all five DoD criteria above; green in `prove_all`.
+- **PARTIAL** — real and verifying, but missing a DoD criterion or scope.
+- **NOT BUILT** — not started.
+- **DEFERRED** — deliberately out of scope by owner decision.
+
+## Scoreboard — §32 systems + key §31 items
+
+| System (spec ref) | Status | Verifier / selftest | Green token |
+|---|---|---|---|
+| Crypto core (§8) | DONE | `_selftest_recognition_crypto_v2` | `SELFTEST_RECOGNITION_CRYPTO_V2_OK` |
+| Encrypted profile (§7,§26-adjacent) | DONE | `_selftest_recognition_encrypted_profile_v2` | `SELFTEST_RECOGNITION_ENCRYPTED_PROFILE_V2_OK` |
+| Recognition Vault (§7) | DONE | `_selftest_recognition_vault_v1` | `RECOGNITION_VAULT_V1_SELFTEST_OK` |
+| Event chain / Timeline (§11,§12,§15) | DONE | `_selftest_recognition_event_chain_v2` + `recognition_verify_event_chain_v2` | `SELFTEST_RECOGNITION_EVENT_CHAIN_V2_OK` |
+| Attestation, pinned trust root (§14) | DONE | `recognition_verify_attestation_v2` | `RECOGNITION_ATTEST_VERIFY_V2_OK` |
+| Extension Governance (§6,§22) | DONE (no per-ext signature/lifecycle) | `_selftest_recognition_extension_governance_v1` | `SELFTEST_RECOGNITION_EXTENSION_GOVERNANCE_V1_OK` |
+| Governed launch / Locked startup (§20) | DONE (real fail-closed gate at browser launch: identity+policy+trust+session receipt, verified before the web view opens) | `_selftest_recognition_launch_v1` + `recognition_locked_startup_browser_v1` | `SELFTEST_RECOGNITION_LAUNCH_V1_OK` / `RECOGNITION_LOCKED_STARTUP_OK` |
+| Runtime-at-rest seal (§7,§19,§30) | PARTIAL (needs real runtime source) | (covered by vault selftest) | `RECOGNITION_RUNTIME_SEAL_V1_OK` |
+| History Engine (§24) | DONE | `_selftest_recognition_history_v1` | `SELFTEST_RECOGNITION_HISTORY_V1_OK` |
+| Recovery Engine (§21) | PARTIAL (vault/seal restore primitives only) | — | — |
+| Evidence / Seal / Freeze (§13,§16,§17) | PARTIAL (over ledger, not live browser) | `recognition_seal_verify_v1` | `RECOGNITION_..._SEAL_VERIFY_V1_OK` |
+| Encrypted Cookies (§23) | NOT BUILT | — | — |
+| Encrypted Downloads (§25) | PARTIAL (browser tracks downloads to `runtime\downloads.v1.ndjson` + a Downloads page; not yet encrypted-at-rest per §25) | — | — |
+| Password Engine (§26) | NOT BUILT | — | — |
+| Bookmarks | PARTIAL (browser bookmarks store `runtime\bookmarks.v1.ndjson` + star toggle + Bookmarks page + omnibox; not yet vault-sealed/receipted) | — | — |
+| Identity Vault / Layer 0 (§9,§27) | NOT BUILT (identity = strings only) | — | — |
+| Network Policy Engine (§29) | NOT BUILT | — | — |
+| Certificate Manager | NOT BUILT | — | — |
+| Sync Engine (§28) | NOT BUILT | — | — |
+| Package Builder / Installer / Updater / Release / License | NOT BUILT | — | — |
+| Deterministic Backup | PARTIAL (freeze bundles + vault) | — | — |
+| TRIAD Restore / NeverLost Integration | NOT BUILT (upstream services) | — | — |
+| Browser runtime / WebView2 shell (§10,§20, WBS 5.0) | DONE (feature browser): multi-tab (live tabs on a persistent host), own governed start page, omnibox suggestions (history+bookmarks), governed hash-chained history, Bookmarks/History/Downloads/Settings pages, find-in-page, per-tab zoom, keyboard shortcuts, HTTPS-first, no autofill/telemetry, popups folded into tabs, fail-closed locked startup (§20), session export → governed packet. Remaining: VPN 5.3, favicons, encrypted-at-rest for history/bookmarks/downloads | `browser/build.ps1` | `RECOGNITION_BROWSER_BUILD_OK` |
+| Release gate + packaging (WBS 7.3/7.4) | DONE (strict gate green; dist wrapped in a verifiable governed packet) | `RUN_RELEASE_GATE_V1` / `RUN_PACKAGE_DIST_V1` | `RECOGNITION_RELEASE_GATE_V1_OK` / `RECOGNITION_PACKAGE_DIST_V1_OK` |
+| Chain head anchor (§15 CHAIN-1) | DONE | `_selftest_recognition_chain_anchor_v1` | `SELFTEST_RECOGNITION_CHAIN_ANCHOR_V1_OK` |
+| Standalone Browser Distribution / installer (§33, WBS 7.3) | NOT BUILT | — | — |
+
+## Verification tooling (release hygiene)
+
+| Tool | Purpose | Token |
+|---|---|---|
+| `recognition_prove_all_v1` | Aggregate every verifier → one proof-of-health receipt | `RECOGNITION_PROVE_ALL_V1_OK` |
+| `recognition_publish_scan_v1` | Pre-publish gate: no plaintext URLs / private keys / passphrases tracked | `RECOGNITION_PUBLISH_SCAN_V1_OK` |
+| `recognition_rotate_attest_key_v1` | Rotate the signing key outside the repo; re-sign + re-pin | `RECOGNITION_ROTATE_ATTEST_KEY_V1_OK` |
+| `recognition_scrub_receipt_urls_v1` | Hash cleartext URLs in legacy receipts | `RECOGNITION_SCRUB_RECEIPT_URLS_V1_OK` |
+| `recognition_clean_publish_history_v1` | Squash to a clean root commit; keep backup branch | `RECOGNITION_CLEAN_PUBLISH_HISTORY_V1_OK` |
+
+## Honest gaps
+
+- **Browser direction (updated):** owner confirmed Recognition will embed an engine
+  (WebView2), sequenced *after* the packet/export law was green. The governed
+  WebView2 shell (`browser/`) now builds, runs, and packages green as a full feature
+  browser — multi-tab, own start page, omnibox over a hash-chained history, bookmarks,
+  downloads, find-in-page, zoom, keyboard shortcuts, fail-closed locked startup, and
+  session export to a governed packet. Convenience stores (history/bookmarks/downloads)
+  live cleartext under `runtime/` (gitignored, vault-sealable); encrypting them at rest
+  per §23/§25/§26 and adding VPN state (§5.3) + favicons are the remaining browser items.
+  The §31 "clean browser session" ✓ predates v2 and stays synthetic until real sessions
+  from this shell feed the evidence chain.
+- **Ecosystem canon not available** — `CLAUDE.md` requires reading
+  `C:\dev\_ecosystem\{SERVICE_MAP, SHARED_INVARIANTS, AGENT_POLICY}`; these are not in
+  this repo/mount. If authoritative release criteria or trust-boundary rules live
+  there, this scoreboard reflects the in-repo handoff only.
+- **§31 crypto was upgraded** — the originally-"proven" encrypted profile used
+  AES-CBC + PBKDF2-SHA1; it is now AES-256-GCM + SHA-256 with a wrapped master key.

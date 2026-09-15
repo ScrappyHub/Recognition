@@ -69,6 +69,14 @@ try {
     Check ($ver.object_count -eq 2 -and $ver.failure_count -eq 0) "verify: 2 objects, 0 failures"
   } finally { RC2-ZeroBytes $master }
 
+  # --- negative: orphan object file not in the manifest (VAULT-1) ---
+  $orphan = Join-Path $P.Objects "orphan_not_in_manifest"
+  RC2-WriteUtf8NoBomLf $orphan "not-a-governed-object"
+  $master = RV1-OpenMaster $P
+  try { $ov = RV1-Verify $P $master } finally { RC2-ZeroBytes $master }
+  Check ($ov.failure_count -ge 1) "orphan object file detected (VAULT-1)"
+  Remove-Item -LiteralPath $orphan -Force
+
   # --- negative: wrong passphrase ---
   $good = $env:RECOGNITION_PASSPHRASE
   $env:RECOGNITION_PASSPHRASE = "WRONG"

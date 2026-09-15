@@ -192,6 +192,19 @@ function RV1-Verify([hashtable]$P,[byte[]]$Master){
         Write-Host ("RECOGNITION_VAULT_V1_OBJECT_FAIL: " + $nameHmac + " -> " + $_.Exception.Message) -ForegroundColor Red
       }
     }
+    # VAULT-1: orphan detection — object files on disk not referenced by the
+    # (GCM-authenticated) manifest. Inert, but flagged so nothing exists in the
+    # vault that the manifest does not account for.
+    if(Test-Path -LiteralPath $P.Objects -PathType Container){
+      $known = @{}
+      foreach($k in @($m.objects.Keys)){ $known[[string]$k] = $true }
+      foreach($of in @(Get-ChildItem -LiteralPath $P.Objects -File -Force -ErrorAction SilentlyContinue)){
+        if(-not $known.ContainsKey($of.Name)){
+          $failures++
+          Write-Host ("RECOGNITION_VAULT_V1_ORPHAN_OBJECT: " + $of.Name) -ForegroundColor Red
+        }
+      }
+    }
   } finally { RC2-ZeroBytes $encKey; RC2-ZeroBytes $manKey }
   # NB: keys are 'object_count'/'failure_count', not 'count'/'failures' — on a
   # PowerShell dictionary, ".count" resolves to the dictionary's own Count

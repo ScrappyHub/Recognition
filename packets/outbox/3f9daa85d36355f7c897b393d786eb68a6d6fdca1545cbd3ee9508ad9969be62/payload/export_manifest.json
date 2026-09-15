@@ -1,1 +1,0 @@
-{"events_schema":"recognition.event.v1","policy_state_schema":"recognition.policy_state.v1","schema":"recognition.session_export_manifest.v1","session_schema":"recognition.session.v1","tabs_schema":"recognition.tabs.v1","trust_context_schema":"recognition.trust_context.v1","vpn_state_schema":"recognition.vpn_state.v1"}

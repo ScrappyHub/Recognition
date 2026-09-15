@@ -1,0 +1,35 @@
+{
+  "schema": "recognition.policy.v1",
+  "pack": "canonical",
+  "version": 1,
+  "description": "Canonical governance policy pack (Handoff §2, §22, §29). Overlays may tighten but not loosen these defaults.",
+  "network": {
+    "https_first": true,
+    "block_plain_http": false,
+    "telemetry": "off",
+    "background_collection": "off",
+    "user_initiated_only": true
+  },
+  "privacy": {
+    "password_autosave": false,
+    "general_autofill": false,
+    "third_party_cookies": "block",
+    "clear_plaintext_on_shutdown": true
+  },
+  "extensions": {
+    "governance_required": true,
+    "policy_ref": "config/extension_policy.v1.json",
+    "load_only": "allow",
+    "unrecognized": "refuse"
+  },
+  "evidence": {
+    "receipts_required": true,
+    "hash_chained": true,
+    "head_anchor_required": true,
+    "verify_before_trust": true
+  },
+  "vpn": {
+    "required": false,
+    "record_state": true
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "recognition.session.v1",
+  "title": "Recognition session transcript (v1) — WBS 6.1",
+  "description": "Session summary exported by the browser shell. URLs are never stored in cleartext; navigations live in events.ndjson as url_sha256.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema","session_id","started_utc","visit_count"],
+  "properties": {
+    "schema":       { "const": "recognition.session.v1" },
+    "session_id":   { "type": "string", "minLength": 1 },
+    "started_utc":  { "type": "string" },
+    "exported_utc": { "type": "string" },
+    "visit_count":  { "type": "integer", "minimum": 0 }
+  }
+}

@@ -35,8 +35,6 @@ function Add-Finding([string]$sev,[string]$file,[int]$line,[string]$why,[string]
   $findings.Add([pscustomobject]@{ severity=$sev; file=$file; line=$line; why=$why; snippet=$snippet })
 }
 
-$keyMarkers = @('BEGIN OPENSSH PRIVATE KEY','BEGIN RSA PRIVATE KEY','BEGIN PRIVATE KEY','BEGIN EC PRIVATE KEY')
-
 foreach($rel in $tracked){
   $full = Join-Path $root $rel
   if(-not (Test-Path -LiteralPath $full -PathType Leaf)){ continue }
@@ -54,13 +52,17 @@ foreach($rel in $tracked){
     if($isReceiptOrRuntime -and $text -match 'https?://'){
       Add-Finding "HIGH" $rel $ln "plaintext URL in receipt/runtime" ($text.Trim())
     }
-    foreach($mk in $keyMarkers){
-      if($text.Contains($mk)){ Add-Finding "CRITICAL" $rel $ln "private key material" $mk }
+    # Real PEM private keys carry the ----- armor. Matching the bare phrase
+    # false-flagged this scanner's own pattern definitions (audit fix).
+    if($text -match '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'){
+      Add-Finding "CRITICAL" $rel $ln "private key material (PEM block)" "-----BEGIN ... PRIVATE KEY-----"
     }
     if(-not $isTest -and $text -match 'RECOGNITION_PASSPHRASE\s*=\s*\S' -and $text -notmatch '<passphrase>' -and $text -notmatch '\$env:RECOGNITION_PASSPHRASE_NEW' -and $text -notmatch '=\s*\$null'){
       Add-Finding "CRITICAL" $rel $ln "passphrase assigned a value" ($text.Trim())
     }
-    if($text -match '-Passphrase\s+\S'){
+    # Require an actual value/variable after -Passphrase (quote or $), so prose
+    # describing the flag is not flagged (audit fix).
+    if($text -match '-Passphrase\s+["''$]'){
       Add-Finding "HIGH" $rel $ln "-Passphrase on a command line (v2 forbids argv secrets)" ($text.Trim())
     }
   }

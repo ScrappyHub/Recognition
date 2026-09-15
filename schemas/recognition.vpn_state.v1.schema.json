@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "recognition.vpn_state.v1",
+  "title": "Recognition VPN state (v1) — WBS 6.3 / §29 network model",
+  "description": "Declared VPN/network posture at session export time. Recognition never initiates hidden network activity; this records user-initiated state only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","connected"],
+  "properties": {
+    "schema":       { "const": "recognition.vpn_state.v1" },
+    "connected":    { "type": "boolean" },
+    "provider":     { "type": ["string","null"] },
+    "exit_region":  { "type": ["string","null"] },
+    "since_utc":    { "type": ["string","null"] },
+    "policy":       { "type": ["string","null"], "description": "policy pack id in effect, if any" }
+  }
+}

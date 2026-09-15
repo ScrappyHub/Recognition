@@ -5,6 +5,21 @@ profiles/
 vault/
 proofs/runs/
 
+# .NET build output — compiled artifacts are never committed (they also blow past
+# GitHub's 100 MB file limit for the self-contained publish exe). Build from source.
+browser/bin/
+browser/obj/
+bin/
+obj/
+
+# Local generated evidence — receipts are per-machine append-only logs and may
+# contain user data (e.g. installed-extension host permissions). Publish the
+# spec + code + trust root + attestation bundles, not raw local receipts.
+proofs/receipts/
+proofs/identity/
+packets/outbox/
+dist/
+
 # Secret key material — NEVER commit. Public trust root lives in proofs/trust/.
 proofs/keys/
 *.ed25519

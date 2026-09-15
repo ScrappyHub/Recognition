@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "recognition.identity.v1",
+  "title": "Recognition identity descriptor (v1) — §9, WBS 4.1",
+  "description": "Local, self-contained identity descriptor. Non-secret ids only (hashes/salt); the vault master key is never stored here. Recognition is its own identity authority (no NeverLost dependency).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","recognition_identity_id","device_id","user_id","vault_id","created_utc","salt"],
+  "properties": {
+    "schema":                  { "const": "recognition.identity.v1" },
+    "recognition_identity_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "device_id":               { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "user_id":                 { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "vault_id":                { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "created_utc":             { "type": "string" },
+    "salt":                    { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+  }
+}
