@@ -35,13 +35,17 @@
               <ColumnDefinition Width="Auto"/>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="&#128274;" Foreground="#6FCF97" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12"/>
             <TextBox x:Name="AddressBar" Grid.Column="1" Background="Transparent" Foreground="#E8E8E8"
                      BorderThickness="0" VerticalContentAlignment="Center" Padding="8,7" CaretBrush="#E8E8E8"
                      FontSize="13" KeyDown="Address_KeyDown" TextChanged="Address_TextChanged"
                      GotKeyboardFocus="Address_GotFocus" LostKeyboardFocus="Address_LostFocus"/>
-            <Button x:Name="StarBtn" Grid.Column="2" Content="&#x2606;" ToolTip="Bookmark this page (Ctrl+D)"
+            <Button x:Name="ShieldBtn" Grid.Column="2" Content="&#x1F6E1;" ToolTip="Trackers &amp; ads blocked — click for settings"
+                    Foreground="#6FCF97" Background="Transparent" BorderThickness="0" FontSize="13"
+                    Padding="6,0" Cursor="Hand" Click="Shield_Click"/>
+            <Button x:Name="StarBtn" Grid.Column="3" Content="&#x2606;" ToolTip="Bookmark this page (Ctrl+D)"
                     Foreground="#C7CCD4" Background="Transparent" BorderThickness="0" FontSize="15"
                     Padding="8,0" Cursor="Hand" Click="Star_Click"/>
           </Grid>

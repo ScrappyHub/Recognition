@@ -48,13 +48,13 @@ The handoff has no separate DoD; §31's ✓ pattern **is** the definition, gover
 | Password Engine (§26) | NOT BUILT | — | — |
 | Bookmarks | PARTIAL (browser bookmarks store `runtime\bookmarks.v1.ndjson` + star toggle + Bookmarks page + omnibox; not yet vault-sealed/receipted) | — | — |
 | Identity Vault / Layer 0 (§9,§27) | NOT BUILT (identity = strings only) | — | — |
-| Network Policy Engine (§29) | NOT BUILT | — | — |
+| Network Policy Engine (§29) | PARTIAL (browser enforces request-level tracker/ad blocking against a governed host blocklist `config\blocklist.v1.txt` + built-in rules; per-site shield counter; HTTPS-first upgrade. No full per-origin policy engine yet) | (in-browser) | — |
 | Certificate Manager | NOT BUILT | — | — |
 | Sync Engine (§28) | NOT BUILT | — | — |
 | Package Builder / Installer / Updater / Release / License | NOT BUILT | — | — |
 | Deterministic Backup | PARTIAL (freeze bundles + vault) | — | — |
 | TRIAD Restore / NeverLost Integration | NOT BUILT (upstream services) | — | — |
-| Browser runtime / WebView2 shell (§10,§20, WBS 5.0) | DONE (feature browser): multi-tab (live tabs on a persistent host), own governed start page, omnibox suggestions (history+bookmarks), governed hash-chained history, Bookmarks/History/Downloads/Settings pages, find-in-page, per-tab zoom, keyboard shortcuts, HTTPS-first, no autofill/telemetry, popups folded into tabs, fail-closed locked startup (§20), session export → governed packet. Remaining: VPN 5.3, favicons, encrypted-at-rest for history/bookmarks/downloads | `browser/build.ps1` | `RECOGNITION_BROWSER_BUILD_OK` |
+| Browser runtime / WebView2 shell (§10,§20,§29, WBS 5.0) | DONE (feature browser): multi-tab on a persistent host with favicons + Opera-style sleeping tabs (hidden tabs suspended to free memory/CPU), Brave-style tracker/ad blocking with a per-site shield counter + toggle, own governed start page, omnibox suggestions (history+bookmarks), governed hash-chained history, Bookmarks/History/Downloads/Settings pages, find-in-page, per-tab zoom, keyboard shortcuts, HTTPS-first, no autofill/telemetry, popups folded into tabs, fail-closed locked startup (§20), session export → governed packet (now carries block stats). Remaining: VPN 5.3, private/incognito mode, encrypted-at-rest for history/bookmarks/downloads | `browser/build.ps1` | `RECOGNITION_BROWSER_BUILD_OK` |
 | Release gate + packaging (WBS 7.3/7.4) | DONE (strict gate green; dist wrapped in a verifiable governed packet) | `RUN_RELEASE_GATE_V1` / `RUN_PACKAGE_DIST_V1` | `RECOGNITION_RELEASE_GATE_V1_OK` / `RECOGNITION_PACKAGE_DIST_V1_OK` |
 | Chain head anchor (§15 CHAIN-1) | DONE | `_selftest_recognition_chain_anchor_v1` | `SELFTEST_RECOGNITION_CHAIN_ANCHOR_V1_OK` |
 | Standalone Browser Distribution / installer (§33, WBS 7.3) | NOT BUILT | — | — |

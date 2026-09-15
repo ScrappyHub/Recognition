@@ -12,25 +12,21 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 
 namespace Recognition.Browser
 {
-    // WBS 5.1 / 5.2 / 5.4 / §5 / §10 / §20 / §24 — governed WebView2 shell.
+    // WBS 5.x / §5 / §10 / §20 / §24 / §29 — governed WebView2 shell.
     //
-    //   * Multi-tab: each tab's WebView2 lives permanently in one host Grid and is
-    //     shown/hidden by Visibility (a TabControl swaps content visuals and would
-    //     tear down the WebView, so it is templated to a header strip only).
-    //   * All tabs share ONE CoreWebView2Environment => one governed profile tree.
-    //   * Locked-startup preflight (§5/§20) runs once, off the UI thread, fail-closed.
-    //   * Privacy (§5.2): HTTPS-first, no password autosave, no autofill, own start page.
-    //   * Governed history (§24) + bookmarks: append-only hash-chained history and a
-    //     bookmarks store under runtime\ (gitignored + vault-sealable); both feed the
-    //     omnibox and internal pages.
-    //   * Parity: keyboard shortcuts, per-tab zoom, find-in-page, downloads tracking,
-    //     internal recognition: pages (start/history/downloads/bookmarks/settings),
-    //     popups folded into governed tabs.
+    // Feel: Chrome/Firefox-style multi-tab chrome (favicons, tab pills, omnibox).
+    // Optimization: Opera/Edge-style "sleeping tabs" — hidden tabs are suspended
+    //   (TrySuspendAsync) to release memory/CPU, resumed on activation.
+    // Privacy: Brave-style tracker/ad blocking at the network layer
+    //   (WebResourceRequested against a governed host blocklist) with a per-site
+    //   shield counter, on top of HTTPS-first, no autofill, no telemetry, fail-closed
+    //   locked startup, hash-chained history, and session export to a governed packet.
     public partial class MainWindow : Window
     {
         private readonly string _repoRoot;
@@ -46,10 +42,13 @@ namespace Recognition.Browser
         private readonly List<DownloadRec> _downloads = new();
         private bool _suppressSuggest;
 
+        // Tracker/ad blocking (Brave-style)
+        private readonly HashSet<string> _blockHosts = new(StringComparer.OrdinalIgnoreCase);
+        private bool _blockingEnabled = true;
+        private int _blockedSession;
+
         private const string StartMarker = "recognition:start";
 
-        // Injected into every page: browser owns these accelerators even when the web
-        // content has keyboard focus (WPF InputBindings only fire when chrome is focused).
         private const string ShortcutScript = @"
 document.addEventListener('keydown',function(e){
   var k=(e.key||'').toLowerCase(); var m=null;
@@ -73,11 +72,13 @@ document.addEventListener('keydown',function(e){
             public TabItem Item = null!;
             public WebView2 Web = null!;
             public TextBlock Header = null!;
+            public Image Fav = null!;
             public readonly List<(string Url, string Title, DateTime Ts)> Visits = new();
             public string CurrentUrl = StartMarker;
             public string CurrentTitle = "New tab";
             public bool Ready;
-            public string Internal = "start";   // "" once a real site loads
+            public int Blocked;
+            public string Internal = "start";
             public bool IsInternal => Internal.Length > 0;
         }
 
@@ -117,6 +118,8 @@ document.addEventListener('keydown',function(e){
                 _history.Load();
                 LoadBookmarks();
                 LoadDownloads();
+                LoadSettings();
+                LoadBlocklist();
 
                 Status("initializing web engine…");
                 _env = await CoreWebView2Environment.CreateAsync(null, userData, new CoreWebView2EnvironmentOptions());
@@ -137,6 +140,7 @@ document.addEventListener('keydown',function(e){
                 }
 
                 await OpenNewTabAsync();
+                UpdateShield();
                 Status("locked startup OK — governed profile: " + userData);
             }
             catch (Exception ex) { ShowFatal("Startup error", ex.ToString()); }
@@ -165,9 +169,11 @@ document.addEventListener('keydown',function(e){
             WebHost.Children.Add(web);
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal };
+            var fav = new Image { Width = 16, Height = 16, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+            tab.Fav = fav;
             var hdr = new TextBlock
             {
-                Text = title, MaxWidth = 190, TextTrimming = TextTrimming.CharacterEllipsis,
+                Text = title, MaxWidth = 180, TextTrimming = TextTrimming.CharacterEllipsis,
                 VerticalAlignment = VerticalAlignment.Center
             };
             var close = new Button
@@ -178,6 +184,7 @@ document.addEventListener('keydown',function(e){
                 ToolTip = "Close tab (Ctrl+W)", Cursor = Cursors.Hand, FontSize = 11
             };
             close.Click += (_, __) => CloseTab(tab);
+            panel.Children.Add(fav);
             panel.Children.Add(hdr);
             panel.Children.Add(close);
             tab.Header = hdr;
@@ -206,6 +213,10 @@ document.addEventListener('keydown',function(e){
             s.IsStatusBarEnabled = false;
             s.AreDevToolsEnabled = true;
 
+            // Brave-style network blocking
+            web.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+            web.CoreWebView2.WebResourceRequested += (o, ev) => OnResourceRequested(tab, ev);
+
             web.CoreWebView2.NavigationStarting   += (o, ev) => OnNavStarting(tab, ev);
             web.CoreWebView2.SourceChanged        += (o, ev) => OnSourceChanged(tab);
             web.CoreWebView2.NavigationCompleted  += (o, ev) => OnNavCompleted(tab, ev);
@@ -213,6 +224,7 @@ document.addEventListener('keydown',function(e){
             web.CoreWebView2.WebMessageReceived   += (o, ev) => OnWebMessage(tab, ev);
             web.CoreWebView2.DownloadStarting     += (o, ev) => OnDownloadStarting(ev);
             web.CoreWebView2.NewWindowRequested   += OnNewWindowRequested;
+            web.CoreWebView2.FaviconChanged       += (o, ev) => OnFaviconChanged(tab);
             try { await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(ShortcutScript); } catch { }
 
             tab.Ready = true;
@@ -237,15 +249,32 @@ document.addEventListener('keydown',function(e){
             if (!ReferenceEquals(e.OriginalSource, Tabs)) return;
             ShowActiveWebView();
             var a = Active; if (a == null) return;
-            SetAddress(a); UpdateStar(a);
+            SetAddress(a); UpdateStar(a); UpdateShield();
             Status(a.IsInternal ? ("recognition:" + a.Internal)
                                 : $"{a.CurrentTitle}  ({a.Visits.Count} visit(s) this tab)");
         }
 
+        // Opera/Edge-style sleeping tabs: only the active WebView2 is resumed; the
+        // rest are suspended to free memory/CPU.
         private void ShowActiveWebView()
         {
             var a = Active;
-            foreach (var t in _tabs) t.Web.Visibility = ReferenceEquals(t, a) ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var t in _tabs)
+            {
+                bool on = ReferenceEquals(t, a);
+                t.Web.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                if (!t.Ready) continue;
+                try
+                {
+                    if (on) t.Web.CoreWebView2.Resume();
+                    else _ = SuspendTab(t);
+                }
+                catch { }
+            }
+        }
+        private static async Task SuspendTab(BrowserTab t)
+        {
+            try { await t.Web.CoreWebView2.TrySuspendAsync(); } catch { }
         }
 
         private void SetHeader(BrowserTab tab, string title)
@@ -269,6 +298,134 @@ document.addEventListener('keydown',function(e){
             _suppressSuggest = true;
             AddressBar.Text = tab.IsInternal ? (tab.Internal == "start" ? "" : "recognition:" + tab.Internal) : tab.CurrentUrl;
             _suppressSuggest = false;
+        }
+
+        // ---- favicons -----------------------------------------------------------
+
+        private async void OnFaviconChanged(BrowserTab tab)
+        {
+            try
+            {
+                if (tab.IsInternal) { tab.Fav.Source = null; return; }
+                using var stream = await tab.Web.CoreWebView2.GetFaviconAsync(CoreWebView2FaviconImageFormat.Png);
+                if (stream == null) { tab.Fav.Source = null; return; }
+                var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                if (ms.Length == 0) { tab.Fav.Source = null; return; }
+                ms.Position = 0;
+                var bmp = new BitmapImage();
+                bmp.BeginInit(); bmp.CacheOption = BitmapCacheOption.OnLoad; bmp.StreamSource = ms; bmp.EndInit(); bmp.Freeze();
+                tab.Fav.Source = bmp;
+            }
+            catch { }
+        }
+
+        // ---- tracker / ad blocking (Brave-style) --------------------------------
+
+        private void OnResourceRequested(BrowserTab tab, CoreWebView2WebResourceRequestedEventArgs e)
+        {
+            if (!_blockingEnabled || _env == null) return;
+            try
+            {
+                var host = new Uri(e.Request.Uri).Host;
+                if (!IsBlockedHost(host)) return;
+                e.Response = _env.CreateWebResourceResponse(null, 403, "Blocked by Recognition", "");
+                tab.Blocked++; _blockedSession++;
+                if (ReferenceEquals(tab, Active)) UpdateShield();
+            }
+            catch { }
+        }
+
+        private bool IsBlockedHost(string host)
+        {
+            host = (host ?? "").ToLowerInvariant();
+            if (host.Length == 0) return false;
+            if (_blockHosts.Contains(host)) return true;
+            int dot = host.IndexOf('.');
+            while (dot >= 0)
+            {
+                var parent = host.Substring(dot + 1);
+                if (_blockHosts.Contains(parent)) return true;
+                dot = host.IndexOf('.', dot + 1);
+            }
+            return false;
+        }
+
+        private void LoadBlocklist()
+        {
+            _blockHosts.Clear();
+            foreach (var h in DefaultBlocklist) _blockHosts.Add(h);
+            // Optional governed override/extension: config\blocklist.v1.txt (one host per line, # comments)
+            var path = Path.Combine(_repoRoot, "config", "blocklist.v1.txt");
+            try
+            {
+                if (File.Exists(path))
+                    foreach (var raw in File.ReadAllLines(path))
+                    {
+                        var line = raw.Trim();
+                        if (line.Length == 0 || line.StartsWith("#")) continue;
+                        _blockHosts.Add(line.ToLowerInvariant());
+                    }
+            }
+            catch { }
+        }
+
+        private static readonly string[] DefaultBlocklist = new[]
+        {
+            // analytics / tag managers
+            "google-analytics.com","googletagmanager.com","google-analytics.l.google.com",
+            "analytics.google.com","stats.g.doubleclick.net","ssl.google-analytics.com",
+            // ad networks
+            "doubleclick.net","googlesyndication.com","googleadservices.com","adservice.google.com",
+            "pagead2.googlesyndication.com","adnxs.com","adsrvr.org","rubiconproject.com",
+            "pubmatic.com","openx.net","criteo.com","criteo.net","taboola.com","outbrain.com",
+            "moatads.com","doubleverify.com","adform.net","smartadserver.com","teads.tv",
+            "amazon-adsystem.com","bidswitch.net","casalemedia.com","33across.com","sharethrough.com",
+            // social trackers
+            "connect.facebook.net","facebook.com/tr","pixel.facebook.com","ads.linkedin.com",
+            "analytics.twitter.com","ads-twitter.com","t.co","bat.bing.com",
+            // product analytics / session replay
+            "hotjar.com","mixpanel.com","segment.com","segment.io","amplitude.com",
+            "fullstory.com","mouseflow.com","clarity.ms","quantserve.com","scorecardresearch.com",
+            "chartbeat.com","newrelic.com","nr-data.net","branch.io","appsflyer.com",
+            "crazyegg.com","optimizely.com","yandex.ru/metrika","mc.yandex.ru"
+        };
+
+        private void UpdateShield()
+        {
+            var a = Active;
+            int n = a?.Blocked ?? 0;
+            ShieldBtn.Content = _blockingEnabled ? ("🛡 " + n) : "🛡✕";
+            ShieldBtn.Foreground = new SolidColorBrush(_blockingEnabled ? Color.FromRgb(0x6F, 0xCF, 0x97) : Color.FromRgb(0x8B, 0x90, 0x9A));
+            ShieldBtn.ToolTip = _blockingEnabled
+                ? $"{n} trackers/ads blocked on this page ({_blockedSession} this session) — click for settings"
+                : "Tracker/ad blocking is OFF — click for settings";
+        }
+        private void Shield_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("settings");
+
+        // ---- settings persistence ----------------------------------------------
+
+        private string SettingsPath() => Path.Combine(_repoRoot, "runtime", "browser_settings.json");
+        private void LoadSettings()
+        {
+            try
+            {
+                var p = SettingsPath();
+                if (!File.Exists(p)) return;
+                using var doc = JsonDocument.Parse(File.ReadAllText(p));
+                if (doc.RootElement.TryGetProperty("blocking_enabled", out var b)) _blockingEnabled = b.GetBoolean();
+            }
+            catch { }
+        }
+        private void SaveSettings()
+        {
+            try
+            {
+                var p = SettingsPath();
+                Directory.CreateDirectory(Path.GetDirectoryName(p)!);
+                File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "}\n", new UTF8Encoding(false));
+            }
+            catch { }
         }
 
         // ---- keyboard shortcuts -------------------------------------------------
@@ -452,6 +609,7 @@ document.addEventListener('keydown',function(e){
         {
             tab.Internal = name;
             tab.CurrentUrl = "recognition:" + name;
+            tab.Fav.Source = null;
             SetHeader(tab, "");
             if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); }
             string html = name switch
@@ -511,8 +669,9 @@ document.addEventListener('keydown',function(e){
             "padding:8px 14px;font-size:13px;cursor:pointer;text-decoration:none}" +
             ".btn.ghost{background:transparent;border-color:#333844;color:#c7ccd4}" +
             ".kv{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid #23272f}" +
-            ".kv .k{color:#8a909b;width:200px;font-size:12.5px}.kv .v{color:#e8e8e8;font-size:12.5px;word-break:break-all}" +
+            ".kv .k{color:#8a909b;width:220px;font-size:12.5px}.kv .v{color:#e8e8e8;font-size:12.5px;word-break:break-all}" +
             ".pill{display:inline-block;border:1px solid #2c7a4b;background:#16351f;color:#7fd6a0;border-radius:999px;padding:3px 10px;font-size:11px;margin-right:6px}" +
+            ".big{font-size:30px;font-weight:700;color:#7fd6a0}" +
             "a{color:#6aa9e9}</style></head><body><div class='wrap'>";
         private const string PageFoot = "</div></body></html>";
 
@@ -539,8 +698,8 @@ button:hover{background:#3480ce}
 <div class='sub'>Governed browser &middot; identity-bound &middot; deterministic evidence</div>
 <form id='f'><input id='q' autofocus autocomplete='off' spellcheck='false' placeholder='Search DuckDuckGo or type a URL'>
 <button type='submit'>Search</button></form>
-<div class='pills'><span class='pill'>HTTPS-first</span><span class='pill'>No autofill</span>
-<span class='pill'>No telemetry</span><span class='pill'>Session &rarr; governed packet</span></div>
+<div class='pills'><span class='pill'>&#128737; Tracker &amp; ad blocking</span><span class='pill'>HTTPS-first</span>
+<span class='pill'>No autofill</span><span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span></div>
 <div class='foot'>every session is exportable as a signed, hash-chained evidence packet</div>
 <script>
 document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();
@@ -600,9 +759,20 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             var (rid, idPath) = ReadIdentityId();
             var profile = Path.Combine(_repoRoot, "runtime", "browser_profile");
             var sb = new StringBuilder(PageHead);
-            sb.Append("<title>Settings</title><h1>Settings</h1><div class='muted'>Governance is enforced by the runtime laws, not toggled here.</div>");
-            sb.Append("<div style='margin-bottom:18px'><span class='pill'>HTTPS-first</span><span class='pill'>No password autosave</span>" +
-                      "<span class='pill'>No general autofill</span><span class='pill'>No telemetry</span></div>");
+            sb.Append("<title>Settings</title><h1>Settings</h1><div class='muted'>Governance is enforced by the runtime laws; a few conveniences are toggleable here.</div>");
+
+            sb.Append("<h1 style='font-size:16px;margin-top:8px'>Privacy &amp; tracking</h1>");
+            sb.Append("<div class='row'><div><div class='t'>Tracker &amp; ad blocking</div>" +
+                      "<div class='u'>Blocks known analytics, ad, and session-replay hosts at the network layer (" + _blockHosts.Count + " rules).</div></div>" +
+                      "<div class='ts'><a class='btn" + (_blockingEnabled ? "" : " ghost") + "' onclick=\"send('toggle-blocking')\">" +
+                      (_blockingEnabled ? "ON" : "OFF") + "</a></div></div>");
+            sb.Append("<div class='row'><div><div class='t'>Blocked this session</div><div class='u'>Across all tabs since launch.</div></div>" +
+                      "<div class='ts'><span class='big'>" + _blockedSession + "</span></div></div>");
+            sb.Append("<div style='margin:8px 0 20px'><span class='pill'>&#128737; Blocking</span><span class='pill'>HTTPS-first</span>" +
+                      "<span class='pill'>No password autosave</span><span class='pill'>No general autofill</span>" +
+                      "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span></div>");
+
+            sb.Append("<h1 style='font-size:16px'>Identity &amp; governance</h1>");
             sb.Append("<div class='kv'><div class='k'>Identity (recognition_identity_id)</div><div class='v'>" + Esc(rid) + "</div></div>");
             sb.Append("<div class='kv'><div class='k'>Identity descriptor</div><div class='v'>" + Esc(idPath) + "</div></div>");
             sb.Append("<div class='kv'><div class='k'>Session id</div><div class='v'>" + Esc(_sessionId) + "</div></div>");
@@ -640,6 +810,11 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             }
             switch (msg)
             {
+                case "toggle-blocking":
+                    _blockingEnabled = !_blockingEnabled; SaveSettings(); UpdateShield();
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
+                    Status("tracker/ad blocking " + (_blockingEnabled ? "ON" : "OFF"));
+                    break;
                 case "clear-history":
                     _history.Clear();
                     if (tab.Internal is "history" or "settings") LoadInternal(tab, tab.Internal);
@@ -704,7 +879,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 
         private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
         {
-            e.Handled = true;   // no OS popups — fold into a governed tab
+            e.Handled = true;
             var uri = e.Uri;
             _ = Dispatcher.InvokeAsync(async () =>
             {
@@ -729,7 +904,10 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             }
             if (e.Uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                 e.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
                 tab.Internal = "";
+                if (!e.IsRedirected) { tab.Blocked = 0; if (ReferenceEquals(tab, Active)) UpdateShield(); }
+            }
             if (ReferenceEquals(tab, Active)) Status("loading…");
         }
 
@@ -753,7 +931,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             tab.Visits.Add((url, title, DateTime.UtcNow));
             _history.Append(url, title);
             SetHeader(tab, title);
-            if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); Status($"visited {TotalVisits()}: {title}"); }
+            if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); UpdateShield(); Status($"visited {TotalVisits()}: {title}"); }
         }
 
         private int TotalVisits() { int n = 0; foreach (var t in _tabs) n += t.Visits.Count; return n; }
@@ -888,7 +1066,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 WriteLf(Path.Combine(dir, "session.json"),
                     "{" + J("schema") + ":" + J("recognition.session.v1") + "," + J("session_id") + ":" + J(_sessionId) + "," +
                           J("started_utc") + ":" + J(Iso(_startedUtc)) + "," + J("exported_utc") + ":" + J(Iso(DateTime.UtcNow)) + "," +
-                          J("tab_count") + ":" + _tabs.Count + "," + J("visit_count") + ":" + total + "}");
+                          J("tab_count") + ":" + _tabs.Count + "," + J("visit_count") + ":" + total + "," +
+                          J("blocked_session") + ":" + _blockedSession + "," + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "}");
 
                 var tb = new StringBuilder("{" + J("schema") + ":" + J("recognition.tabs.v1") + "," + J("tabs") + ":[");
                 for (int i = 0; i < _tabs.Count; i++)
@@ -898,7 +1077,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                     if (i > 0) tb.Append(",");
                     tb.Append("{" + J("index") + ":" + i + "," + J("url_sha256") + ":" + J(Sha256Hex(url)) + "," +
                               J("title") + ":" + J(t.IsInternal ? InternalTitle(t.Internal) : t.CurrentTitle) + "," +
-                              J("internal") + ":" + (t.IsInternal ? "true" : "false") + "}");
+                              J("blocked") + ":" + t.Blocked + "," + J("internal") + ":" + (t.IsInternal ? "true" : "false") + "}");
                 }
                 tb.Append("]}");
                 WriteLf(Path.Combine(dir, "tabs.json"), tb.ToString());
