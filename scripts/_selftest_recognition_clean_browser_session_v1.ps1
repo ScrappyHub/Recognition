@@ -69,7 +69,8 @@ $ProfileScript = Join-Path $RepoRoot "scripts\recognition_encrypted_profile_v1.p
 $CleanScript = Join-Path $RepoRoot "scripts\recognition_clean_browser_session_v1.ps1"
 
 $ProfileId = "clean-browser-selftest-v1"
-$Passphrase = "recognition-clean-browser-passphrase-v1"
+# Ephemeral, per-run test passphrase (never a real credential; not committed as a literal)
+$Passphrase = "selftest-" + [Guid]::NewGuid().ToString("N")
 $SessionId = "clean-browser-selftest-session-v1"
 
 $ProfileDir = Join-Path $RepoRoot ("profiles\" + $ProfileId)

@@ -68,7 +68,8 @@ $ProfileScript = Join-Path $RepoRoot "scripts\recognition_encrypted_profile_v1.p
 $StartupScript = Join-Path $RepoRoot "scripts\recognition_locked_startup_v1.ps1"
 
 $ProfileId = "locked-startup-selftest-v1"
-$Passphrase = "recognition-locked-startup-passphrase-v1"
+# Ephemeral, per-run test passphrase (never a real credential; not committed as a literal)
+$Passphrase = "selftest-" + [Guid]::NewGuid().ToString("N")
 
 $ProfileDir = Join-Path $RepoRoot ("profiles\" + $ProfileId)
 if(Test-Path -LiteralPath $ProfileDir -PathType Container){

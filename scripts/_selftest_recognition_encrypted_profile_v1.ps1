@@ -70,7 +70,8 @@ if(Test-Path -LiteralPath $ProfileDir -PathType Container){
   Remove-Item -LiteralPath $ProfileDir -Recurse -Force
 }
 
-$Passphrase = "recognition-selftest-passphrase-v1"
+# Ephemeral, per-run test passphrase (never a real credential; not committed as a literal)
+$Passphrase = "selftest-" + [Guid]::NewGuid().ToString("N")
 $OutPath = Join-Path $RepoRoot "runtime\encrypted_profile_selftest_value.txt"
 
 RunChecked @("-RepoRoot",$RepoRoot,"-ProfileId",$ProfileId,"-Action","init","-Passphrase",$Passphrase) "ENCRYPTED_PROFILE_INIT_OK"
