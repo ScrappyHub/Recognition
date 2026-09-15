@@ -1,8 +1,11 @@
 # Recognition — brand assets
 
-The mark is a **privacy shield** (green gradient) carrying a **padlock with a keyhole**,
-on a dark rounded tile. It reads at every size from a 16 px tab favicon to a 256 px
-installer icon.
+The mark is a stylized blue **"R"** enclosing a **human head in profile** with a glowing
+**perception node** — evoking *recognition*: seeing, verifying, and knowing the software
+you run. Delivered on a transparent background so it sits cleanly on light or dark
+surfaces, from a 16 px favicon to a 256 px installer icon.
+
+(A prior shield-and-lock concept is retained in git history; this is the current mark.)
 
 ## Files
 
