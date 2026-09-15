@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Recognition">
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7FE3B0"/>
+      <stop offset="1" stop-color="#1A8C63"/>
+    </linearGradient>
+  </defs>
+  <!-- dark rounded tile -->
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="#181B22"/>
+  <!-- shield: rounded top + pointed bottom -->
+  <path fill="url(#shield)" d="
+    M 154 87
+    h 204
+    a 51 51 0 0 1 51 51
+    v 128
+    L 256 440
+    L 103 266
+    v -128
+    a 51 51 0 0 1 51 -51 z"/>
+  <!-- padlock -->
+  <g fill="#F0F7F2">
+    <!-- shackle -->
+    <path fill="none" stroke="#F0F7F2" stroke-width="20" d="M 213 214 v -18 a 43 43 0 0 1 86 0 v 18"/>
+    <!-- body -->
+    <rect x="197" y="214" width="118" height="104" rx="18"/>
+  </g>
+  <!-- keyhole -->
+  <g fill="#1A8C63">
+    <circle cx="256" cy="255" r="16"/>
+    <path d="M 249 258 h 14 l -4 40 h -6 z"/>
+  </g>
+</svg>

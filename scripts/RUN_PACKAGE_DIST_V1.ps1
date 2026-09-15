@@ -49,7 +49,12 @@ CopyInto "schemas"      "schemas"
 CopyInto "policies"     "policies"
 CopyInto "config"       "config"
 CopyInto "docs"         "docs"
-CopyInto "proofs\trust" "trust"
+CopyInto "branding"     "branding"
+CopyInto "installer"    "installer"
+# Trust root must sit at proofs\trust\ so the runtime scripts resolve it against the
+# install root (RepoRoot). locked-startup checks proofs\trust\allowed_signers.
+New-Item -ItemType Directory -Force -Path (Join-Path $dist "proofs") | Out-Null
+CopyInto "proofs\trust" "proofs\trust"
 # drop scratch + any stray key material from the packaged scripts
 $scratch = Join-Path (Join-Path $dist "scripts") "_scratch"
 if(Test-Path -LiteralPath $scratch){ Remove-Item -LiteralPath $scratch -Recurse -Force }
@@ -66,7 +71,18 @@ $vout = & $verifier -PacketDir $pkt *>&1 | Out-String
 Write-Host $vout
 if($vout -notmatch "VERIFY_OK"){ Die "distribution packet failed verification" }
 
+# 4) produce the downloadable zip (the standalone, self-contained distribution)
+$zip = Join-Path $RepoRoot "dist\Recognition-win-x64.zip"
+if(Test-Path -LiteralPath $zip){ Remove-Item -LiteralPath $zip -Force }
+Write-Host "=== zipping standalone distribution ===" -ForegroundColor Cyan
+Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $zip -Force
+$zipMB = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 1)
+
 Write-Host ""
 Write-Host ("Distribution assembled: " + $dist)
 Write-Host ("Governed dist packet  : " + $pkt)
+Write-Host ("Downloadable zip      : " + $zip + "  (" + $zipMB + " MB)")
+Write-Host ""
+Write-Host "To install from the zip: extract it, then run"
+Write-Host "  pwsh -File installer\RECOGNITION_INSTALL_V1.ps1"
 Write-Host "RECOGNITION_PACKAGE_DIST_V1_OK" -ForegroundColor Green

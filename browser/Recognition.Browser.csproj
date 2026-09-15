@@ -12,10 +12,16 @@
     <AssemblyName>RecognitionBrowser</AssemblyName>
     <RootNamespace>Recognition.Browser</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>recognition.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2739.15" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- window icon (pack URI) -->
+    <Resource Include="recognition.ico" />
   </ItemGroup>
 
 </Project>

@@ -47,12 +47,17 @@ namespace Recognition.Browser
         private bool _blockingEnabled = true;
         private int _blockedSession;
 
+        // Private/incognito: a separate ephemeral profile in a temp folder, deleted on exit.
+        private CoreWebView2Environment? _privateEnv;
+        private string? _privateDir;
+
         private const string StartMarker = "recognition:start";
 
         private const string ShortcutScript = @"
 document.addEventListener('keydown',function(e){
   var k=(e.key||'').toLowerCase(); var m=null;
-  if(e.ctrlKey&&k==='t')m='newtab';
+  if(e.ctrlKey&&e.shiftKey&&k==='n')m='newprivate';
+  else if(e.ctrlKey&&k==='t')m='newtab';
   else if(e.ctrlKey&&k==='w')m='closetab';
   else if(e.ctrlKey&&k==='l')m='focusaddr';
   else if((e.ctrlKey&&k==='r')||k==='f5')m='reload';
@@ -77,6 +82,7 @@ document.addEventListener('keydown',function(e){
             public string CurrentUrl = StartMarker;
             public string CurrentTitle = "New tab";
             public bool Ready;
+            public bool Private;
             public int Blocked;
             public string Internal = "start";
             public bool IsInternal => Internal.Length > 0;
@@ -87,6 +93,13 @@ document.addEventListener('keydown',function(e){
             InitializeComponent();
             _repoRoot = FindRepoRoot(AppContext.BaseDirectory);
             Loaded += OnLoaded;
+            Closing += OnClosing;
+        }
+
+        private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            foreach (var t in _tabs) { if (t.Private) { try { t.Web.Dispose(); } catch { } } }
+            if (_privateDir != null) { try { if (Directory.Exists(_privateDir)) Directory.Delete(_privateDir, true); } catch { } }
         }
 
         private static string FindRepoRoot(string start)
@@ -161,9 +174,32 @@ document.addEventListener('keydown',function(e){
             AddressBar.Focus();
         }
 
-        private async Task<BrowserTab?> NewTabCoreAsync(string title)
+        private async Task OpenNewPrivateTabAsync()
         {
-            var tab = new BrowserTab();
+            var tab = await NewTabCoreAsync("Private", true);
+            if (tab == null) return;
+            Tabs.SelectedItem = tab.Item;
+            ShowActiveWebView();
+            LoadInternal(tab, "start");   // renders the private start page for private tabs
+            AddressBar.Text = "";
+            AddressBar.Focus();
+            Status("private tab — nothing written to history, bookmarks, or the profile");
+        }
+
+        private async Task<CoreWebView2Environment> EnsurePrivateEnvAsync()
+        {
+            if (_privateEnv != null) return _privateEnv;
+            _privateDir = Path.Combine(Path.GetTempPath(), "rb-private-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(_privateDir);
+            _privateEnv = await CoreWebView2Environment.CreateAsync(null, _privateDir, new CoreWebView2EnvironmentOptions());
+            return _privateEnv;
+        }
+
+        private async void MenuNewPrivate_Click(object sender, RoutedEventArgs e) => await OpenNewPrivateTabAsync();
+
+        private async Task<BrowserTab?> NewTabCoreAsync(string title, bool priv = false)
+        {
+            var tab = new BrowserTab { Private = priv };
             var web = new WebView2 { Visibility = Visibility.Collapsed };
             tab.Web = web;
             WebHost.Children.Add(web);
@@ -197,7 +233,18 @@ document.addEventListener('keydown',function(e){
             ShowActiveWebView();
             WebHost.UpdateLayout();
 
-            try { await web.EnsureCoreWebView2Async(_env); }
+            CoreWebView2Environment? envToUse = _env;
+            if (priv)
+            {
+                try { envToUse = await EnsurePrivateEnvAsync(); }
+                catch (Exception ex)
+                {
+                    _tabs.Remove(tab); Tabs.Items.Remove(tab.Item); WebHost.Children.Remove(web);
+                    ShowFatal("Private mode failed", "Could not create the ephemeral private profile.\n\n" + ex);
+                    return null;
+                }
+            }
+            try { await web.EnsureCoreWebView2Async(envToUse); }
             catch (Exception ex)
             {
                 _tabs.Remove(tab); Tabs.Items.Remove(tab.Item); WebHost.Children.Remove(web);
@@ -280,7 +327,8 @@ document.addEventListener('keydown',function(e){
         private void SetHeader(BrowserTab tab, string title)
         {
             if (!tab.IsInternal && !string.IsNullOrWhiteSpace(title)) tab.CurrentTitle = title;
-            tab.Header.Text = tab.IsInternal ? InternalTitle(tab.Internal) : tab.CurrentTitle;
+            var label = tab.IsInternal ? InternalTitle(tab.Internal) : tab.CurrentTitle;
+            tab.Header.Text = (tab.Private ? "🕶 " : "") + label;
         }
 
         private static string InternalTitle(string name) => name switch
@@ -435,7 +483,8 @@ document.addEventListener('keydown',function(e){
             bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
             bool alt  = (Keyboard.Modifiers & ModifierKeys.Alt) != 0;
             string? m = null;
-            if (ctrl && e.Key == Key.T) m = "newtab";
+            if (ctrl && (Keyboard.Modifiers & ModifierKeys.Shift) != 0 && e.Key == Key.N) m = "newprivate";
+            else if (ctrl && e.Key == Key.T) m = "newtab";
             else if (ctrl && e.Key == Key.W) m = "closetab";
             else if (ctrl && e.Key == Key.L) m = "focusaddr";
             else if ((ctrl && e.Key == Key.R) || e.Key == Key.F5) m = "reload";
@@ -456,6 +505,7 @@ document.addEventListener('keydown',function(e){
             switch (m)
             {
                 case "newtab": await OpenNewTabAsync(); break;
+                case "newprivate": await OpenNewPrivateTabAsync(); break;
                 case "closetab": if (a != null) CloseTab(a); break;
                 case "focusaddr": AddressBar.Focus(); AddressBar.SelectAll(); break;
                 case "reload": Reload_Click(this, new RoutedEventArgs()); break;
@@ -560,7 +610,7 @@ document.addEventListener('keydown',function(e){
             bool on = !tab.IsInternal && IsBookmarked(tab.CurrentUrl);
             StarBtn.Content = on ? "★" : "☆";
             StarBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0xF2, 0xC1, 0x4E) : Color.FromRgb(0xC7, 0xCC, 0xD4));
-            StarBtn.IsEnabled = !tab.IsInternal;
+            StarBtn.IsEnabled = !tab.IsInternal && !tab.Private;
         }
 
         // ---- locked startup preflight (worker thread) ---------------------------
@@ -618,7 +668,7 @@ document.addEventListener('keydown',function(e){
                 "downloads" => DownloadsHtml(),
                 "bookmarks" => BookmarksHtml(),
                 "settings"  => SettingsHtml(),
-                _           => StartPageHtml()
+                _           => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
             try { tab.Web.CoreWebView2.NavigateToString(html); } catch (Exception ex) { Status("page error: " + ex.Message); }
         }
@@ -701,6 +751,41 @@ button:hover{background:#3480ce}
 <div class='pills'><span class='pill'>&#128737; Tracker &amp; ad blocking</span><span class='pill'>HTTPS-first</span>
 <span class='pill'>No autofill</span><span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span></div>
 <div class='foot'>every session is exportable as a signed, hash-chained evidence packet</div>
+<script>
+document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();
+var v=(document.getElementById('q').value||'').trim();if(!v)return;
+if(/^[a-z][a-z0-9+.\-]*:\/\//i.test(v)){location.href=v;}
+else if(v.indexOf('.')>-1&&v.indexOf(' ')===-1){location.href='https://'+v;}
+else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
+</script></body></html>";
+        }
+
+        private static string PrivateStartPageHtml()
+        {
+            return @"<!doctype html><html><head><meta charset='utf-8'><title>Recognition — Private</title><style>
+html,body{height:100%;margin:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#2a2540,#17151f 60%);
+     color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.logo{font-size:44px;line-height:1}
+h1{font-weight:600;letter-spacing:.5px;margin:14px 0 2px;font-size:26px}
+.sub{color:#a99fce;margin-bottom:30px;font-size:12.5px}
+form{display:flex;width:min(640px,82vw);box-shadow:0 8px 30px rgba(0,0,0,.4);border-radius:10px}
+input{flex:1;padding:15px 18px;border:1px solid #3b3550;border-right:none;border-radius:10px 0 0 10px;
+      background:#12101a;color:#e8e8e8;font-size:15px;outline:none}
+input::placeholder{color:#6a6480}
+button{padding:0 26px;border:1px solid #6b4bd6;border-radius:0 10px 10px 0;background:#6b4bd6;color:#fff;font-size:15px;cursor:pointer}
+button:hover{background:#7d5ee6}
+.pills{margin-top:26px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.pill{border:1px solid #40395a;background:#211d30;color:#b9b0d8;border-radius:999px;padding:6px 12px;font-size:11.5px}
+.foot{position:fixed;bottom:18px;color:#5a5470;font-size:11px}
+</style></head><body>
+<div class='logo'>&#128374;</div><h1>Private tab</h1>
+<div class='sub'>Nothing here is written to history, bookmarks, or the governed profile</div>
+<form id='f'><input id='q' autofocus autocomplete='off' spellcheck='false' placeholder='Search DuckDuckGo or type a URL'>
+<button type='submit'>Search</button></form>
+<div class='pills'><span class='pill'>&#128374; Ephemeral profile</span><span class='pill'>&#128737; Tracker blocking on</span>
+<span class='pill'>No history</span><span class='pill'>No bookmarks</span><span class='pill'>Erased on close</span></div>
+<div class='foot'>a fresh, isolated profile that is deleted when the last private tab closes</div>
 <script>
 document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();
 var v=(document.getElementById('q').value||'').trim();if(!v)return;
@@ -929,7 +1014,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             var title = tab.Web.CoreWebView2.DocumentTitle ?? "";
             tab.CurrentUrl = url; tab.CurrentTitle = title;
             tab.Visits.Add((url, title, DateTime.UtcNow));
-            _history.Append(url, title);
+            if (!tab.Private) _history.Append(url, title);   // private tabs leave no persisted trace
             SetHeader(tab, title);
             if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); UpdateShield(); Status($"visited {TotalVisits()}: {title}"); }
         }
@@ -1073,23 +1158,28 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 for (int i = 0; i < _tabs.Count; i++)
                 {
                     var t = _tabs[i];
-                    var url = t.IsInternal ? ("recognition:" + t.Internal) : t.CurrentUrl;
+                    var url = t.Private ? "recognition:private" : (t.IsInternal ? ("recognition:" + t.Internal) : t.CurrentUrl);
+                    var ttl = t.Private ? "Private tab" : (t.IsInternal ? InternalTitle(t.Internal) : t.CurrentTitle);
                     if (i > 0) tb.Append(",");
                     tb.Append("{" + J("index") + ":" + i + "," + J("url_sha256") + ":" + J(Sha256Hex(url)) + "," +
-                              J("title") + ":" + J(t.IsInternal ? InternalTitle(t.Internal) : t.CurrentTitle) + "," +
-                              J("blocked") + ":" + t.Blocked + "," + J("internal") + ":" + (t.IsInternal ? "true" : "false") + "}");
+                              J("title") + ":" + J(ttl) + "," +
+                              J("blocked") + ":" + t.Blocked + "," + J("internal") + ":" + (t.IsInternal ? "true" : "false") + "," +
+                              J("private") + ":" + (t.Private ? "true" : "false") + "}");
                 }
                 tb.Append("]}");
                 WriteLf(Path.Combine(dir, "tabs.json"), tb.ToString());
 
                 var sb = new StringBuilder(); int seq = 0;
                 for (int i = 0; i < _tabs.Count; i++)
+                {
+                    if (_tabs[i].Private) continue;   // private tabs leave no exported trace
                     foreach (var v in _tabs[i].Visits)
                     {
                         seq++;
                         sb.Append("{" + J("seq") + ":" + seq + "," + J("tab_index") + ":" + i + "," + J("ts_utc") + ":" + J(Iso(v.Ts)) + "," +
                                   J("type") + ":" + J("navigation") + "," + J("url_sha256") + ":" + J(Sha256Hex(v.Url)) + "," + J("title") + ":" + J(v.Title) + "}\n");
                     }
+                }
                 WriteLf(Path.Combine(dir, "events.ndjson"), sb.ToString());
 
                 WriteLf(Path.Combine(dir, "vpn_state.json"),
