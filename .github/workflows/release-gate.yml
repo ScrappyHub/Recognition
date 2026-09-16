@@ -22,6 +22,22 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Ensure real OpenSSH ssh-keygen is first on PATH
+        shell: pwsh
+        run: |
+          # Get-Command otherwise resolves the Windows App-Execution-Alias stub, which
+          # throws when started with redirected stdio (breaks attestation + SoftwareID).
+          $osdir = Join-Path $env:SystemRoot 'System32\OpenSSH'
+          $exe = Join-Path $osdir 'ssh-keygen.exe'
+          if (-not (Test-Path $exe)) {
+            $git = Join-Path $env:ProgramFiles 'Git\usr\bin'
+            if (Test-Path (Join-Path $git 'ssh-keygen.exe')) { $osdir = $git; $exe = Join-Path $git 'ssh-keygen.exe' }
+          }
+          if (-not (Test-Path $exe)) { throw "no real ssh-keygen.exe found on runner" }
+          Add-Content -Path $env:GITHUB_PATH -Value $osdir   # prepended for later steps
+          Write-Host "ssh-keygen -> $exe"
+          & $exe -h 2>&1 | Select-Object -First 1
+
       - name: Run the strict release gate
         shell: pwsh
         env:
