@@ -3,8 +3,12 @@
   "mode": "off",
   "proxy": "",
   "exit_region": "",
-  "exit_check_url": "",
+  "exit_check_url": "https://api.ipify.org?format=json",
   "auto_optimize": false,
-  "endpoints": [],
-  "notes": "mode: off | proxy | wireguard | system. In 'proxy' mode the browser routes through 'proxy' (e.g. socks5://127.0.0.1:9050). 'endpoints' is your BYO exit list [{name, region, proxy}] shown in Settings > Network to choose from or auto-optimize (lowest latency). Recognition operates no exit servers. Routing changes apply on next launch. exit_check_url is used only when you click Verify. wireguard tunnels are managed by scripts/recognition_vpn_wireguard_v1.ps1."
+  "endpoints": [
+    { "name": "tor-local", "region": "Local (Tor)", "proxy": "socks5://127.0.0.1:9050" },
+    { "name": "exit-us",   "region": "US (edit host)", "proxy": "socks5://REPLACE-US-HOST:1080" },
+    { "name": "exit-eu",   "region": "EU (edit host)", "proxy": "socks5://REPLACE-EU-HOST:1080" }
+  ],
+  "notes": "SELF-OWNED / bring-your-own exits — Recognition operates no servers. 'tor-local' works if you run Tor (SOCKS 9050). Replace the exit-us/exit-eu hosts with YOUR own WireGuard/SOCKS/HTTP exits (self-hosted or a provider), or add more { name, region, proxy }. Pick one in Settings > Network or the toolbar VPN menu, or Auto-optimize to select the lowest-latency reachable exit. Incognito always routes through the first available endpoint. Routing changes apply on next launch (the engine proxy is set at startup)."
 }

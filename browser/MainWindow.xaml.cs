@@ -48,8 +48,11 @@ namespace Recognition.Browser
         private int _blockedSession;
 
         // Private/incognito: a separate ephemeral profile in a temp folder, deleted on exit.
+        // Incognito ALWAYS routes through the VPN when an endpoint is available (safe default).
         private CoreWebView2Environment? _privateEnv;
         private string? _privateDir;
+        private string _privateVpnRegion = "";   // region label the private env is tunneled through ("" = none)
+        private bool _privateVpnOn;
 
         // Governed network / VPN (config/network.v1.json)
         private string _netMode = "off";       // off | proxy | wireguard | system
@@ -204,7 +207,9 @@ document.addEventListener('keydown',function(e){
             LoadInternal(tab, "start");   // renders the private start page for private tabs
             AddressBar.Text = "";
             AddressBar.Focus();
-            Status("private tab — nothing written to history, bookmarks, or the profile");
+            Status(_privateVpnOn
+                ? ("private tab — VPN on" + (string.IsNullOrEmpty(_privateVpnRegion) ? "" : " (" + _privateVpnRegion + ")") + ", nothing persisted")
+                : "private tab — nothing persisted (add a VPN endpoint in Settings to tunnel incognito)");
         }
 
         private async Task<CoreWebView2Environment> EnsurePrivateEnvAsync()
@@ -212,8 +217,29 @@ document.addEventListener('keydown',function(e){
             if (_privateEnv != null) return _privateEnv;
             _privateDir = Path.Combine(Path.GetTempPath(), "rb-private-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_privateDir);
-            _privateEnv = await CoreWebView2Environment.CreateAsync(null, _privateDir, NetOpts());
+            _privateEnv = await CoreWebView2Environment.CreateAsync(null, _privateDir, PrivateEnvOpts());
             return _privateEnv;
+        }
+
+        // Incognito forces the VPN on: use the active proxy, else the first configured
+        // endpoint. The private env's proxy is fixed at creation, so this is a safe,
+        // no-leak default for private browsing whenever an endpoint exists.
+        private CoreWebView2EnvironmentOptions PrivateEnvOpts()
+        {
+            var o = new CoreWebView2EnvironmentOptions();
+            string proxy = _netProxy, region = _netExitRegion;
+            if (string.IsNullOrWhiteSpace(proxy) && _netEndpoints.Count > 0)
+            {
+                proxy = _netEndpoints[0].Proxy;
+                region = string.IsNullOrEmpty(_netEndpoints[0].Region) ? _netEndpoints[0].Name : _netEndpoints[0].Region;
+            }
+            if (!string.IsNullOrWhiteSpace(proxy))
+            {
+                o.AdditionalBrowserArguments = "--proxy-server=\"" + proxy + "\"";
+                _privateVpnOn = true; _privateVpnRegion = region ?? "";
+            }
+            else { _privateVpnOn = false; _privateVpnRegion = ""; }
+            return o;
         }
 
         private async void MenuNewPrivate_Click(object sender, RoutedEventArgs e) => await OpenNewPrivateTabAsync();
@@ -483,7 +509,50 @@ document.addEventListener('keydown',function(e){
                 ? ("VPN ON — " + _netMode + (string.IsNullOrEmpty(_netExitRegion) ? "" : " · " + _netExitRegion) + "  (click for settings)")
                 : "VPN OFF — click to configure";
         }
-        private void Vpn_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("settings");
+        private void Vpn_Click(object sender, RoutedEventArgs e)
+        {
+            var cm = new ContextMenu();
+            var off = new MenuItem { Header = "Off (direct connection)", IsChecked = !NetActive() };
+            off.Click += (_, __) => SetVpnOff();
+            cm.Items.Add(off);
+            if (_netEndpoints.Count > 0)
+            {
+                cm.Items.Add(new Separator());
+                foreach (var ep in _netEndpoints)
+                {
+                    var label = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
+                    var mi = new MenuItem { Header = label, IsChecked = (_netMode == "proxy" && _netProxy == ep.Proxy) };
+                    var epc = ep;
+                    mi.Click += (_, __) => SetVpnEndpoint(epc);
+                    cm.Items.Add(mi);
+                }
+                cm.Items.Add(new Separator());
+                var opt = new MenuItem { Header = "Auto-optimize (best placement)" };
+                opt.Click += (_, __) => { var a = Active; if (a != null) _ = OptimizeVpnAsync(a); };
+                cm.Items.Add(opt);
+            }
+            cm.Items.Add(new Separator());
+            var settings = new MenuItem { Header = "Network settings…" };
+            settings.Click += (_, __) => OpenInternalInActiveTab("settings");
+            cm.Items.Add(settings);
+            cm.PlacementTarget = VpnBtn;
+            cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            cm.IsOpen = true;
+        }
+
+        private void SetVpnOff()
+        {
+            _netMode = "off"; _netProxy = ""; _netExitRegion = ""; SaveNetworkConfig(); UpdateVpn();
+            var a = Active; if (a != null && a.Internal == "settings") LoadInternal(a, "settings");
+            Status("VPN off — direct connection (applies to new sessions on next launch)");
+        }
+        private void SetVpnEndpoint(NetEndpoint ep)
+        {
+            _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
+            SaveNetworkConfig(); UpdateVpn();
+            var a = Active; if (a != null && a.Internal == "settings") LoadInternal(a, "settings");
+            Status("VPN exit set to " + _netExitRegion + " (applies on next launch)");
+        }
 
         // ---- settings persistence ----------------------------------------------
 
@@ -929,9 +998,12 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 </script></body></html>";
         }
 
-        private static string PrivateStartPageHtml()
+        private string PrivateStartPageHtml()
         {
-            return @"<!doctype html><html><head><meta charset='utf-8'><title>Recognition — Private</title><style>
+            var vpnPill = _privateVpnOn
+                ? "<span class='pill' style='border-color:#2c7a4b;background:#16351f;color:#7fd6a0'>&#127760; VPN on" + (string.IsNullOrEmpty(_privateVpnRegion) ? "" : " &middot; " + Esc(_privateVpnRegion)) + "</span>"
+                : "<span class='pill' style='border-color:#7a5a2c;background:#352a16;color:#d6b87f'>&#127760; VPN: add an endpoint in Settings</span>";
+            var head = @"<!doctype html><html><head><meta charset='utf-8'><title>Recognition — Private</title><style>
 html,body{height:100%;margin:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#2a2540,#17151f 60%);
      color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center}
@@ -952,8 +1024,8 @@ button:hover{background:#7d5ee6}
 <div class='sub'>Nothing here is written to history, bookmarks, or the governed profile</div>
 <form id='f'><input id='q' autofocus autocomplete='off' spellcheck='false' placeholder='Search DuckDuckGo or type a URL'>
 <button type='submit'>Search</button></form>
-<div class='pills'><span class='pill'>&#128374; Ephemeral profile</span><span class='pill'>&#128737; Tracker blocking on</span>
-<span class='pill'>No history</span><span class='pill'>No bookmarks</span><span class='pill'>Erased on close</span></div>
+<div class='pills'>" + vpnPill + @"<span class='pill'>&#128374; Ephemeral profile</span><span class='pill'>&#128737; Tracker blocking on</span>
+<span class='pill'>No history</span><span class='pill'>Erased on close</span></div>
 <div class='foot'>a fresh, isolated profile that is deleted when the last private tab closes</div>
 <script>
 document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();
@@ -962,6 +1034,7 @@ if(/^[a-z][a-z0-9+.\-]*:\/\//i.test(v)){location.href=v;}
 else if(v.indexOf('.')>-1&&v.indexOf(' ')===-1){location.href='https://'+v;}
 else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 </script></body></html>";
+            return head;
         }
 
         private string HistoryHtml()
@@ -1117,26 +1190,13 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 case "verify-exit": if (!string.IsNullOrWhiteSpace(_netExitCheckUrl)) NavigateTab(tab, _netExitCheckUrl); break;
                 case "open-profile": OpenFolder(Path.Combine(_repoRoot, "runtime", "browser_profile")); break;
                 case "open-packets": OpenFolder(Path.Combine(_repoRoot, "packets")); break;
-                case "vpn-off":
-                    _netMode = "off"; _netProxy = ""; _netExitRegion = ""; SaveNetworkConfig(); UpdateVpn();
-                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
-                    Status("VPN off — direct connection (applies on next launch)");
-                    break;
-                case "vpn-optimize":
-                    Status("probing endpoints for best placement…"); _ = OptimizeVpnAsync(tab);
-                    break;
+                case "vpn-off": SetVpnOff(); break;
+                case "vpn-optimize": Status("probing endpoints for best placement…"); _ = OptimizeVpnAsync(tab); break;
             }
             if (msg.StartsWith("vpn-pick:"))
             {
-                var name = msg.Substring("vpn-pick:".Length);
-                var ep = _netEndpoints.FirstOrDefault(x => x.Name == name);
-                if (ep != null)
-                {
-                    _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
-                    SaveNetworkConfig(); UpdateVpn();
-                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
-                    Status("VPN exit set to " + _netExitRegion + " (applies on next launch)");
-                }
+                var ep = _netEndpoints.FirstOrDefault(x => x.Name == msg.Substring("vpn-pick:".Length));
+                if (ep != null) SetVpnEndpoint(ep);
             }
         }
 
