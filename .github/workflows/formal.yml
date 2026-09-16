@@ -1,0 +1,26 @@
+name: formal
+
+# Formal verification: TLC model-checks the TLA+ specs in formal\ (evidence-chain
+# tamper-evidence + soundness, fail-closed locked startup). Runs on every push.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: TLA+ model check
+        shell: pwsh
+        run: |
+          $o = & pwsh -File scripts/RUN_TLA_CHECK_V1.ps1 -RepoRoot . *>&1 | Out-String
+          Write-Host $o
+          if ($o -notmatch 'RECOGNITION_TLA_CHECK_V1_OK') { throw 'TLA+ verification failed' }

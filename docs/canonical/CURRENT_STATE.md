@@ -49,7 +49,8 @@ The handoff has no separate DoD; §31's ✓ pattern **is** the definition, gover
 | Password Engine (§26) | NOT BUILT (no password autosave by design; at-rest primitive is DPAPI as used by other stores) | — | — |
 | Bookmarks | DONE (browser-level): bookmarks **encrypted at rest** (`runtime\bookmarks.v1.enc`, DPAPI) + star toggle + Bookmarks page + omnibox | (in-browser) | — |
 | Identity Vault / Layer 0 (§9,§27) | NOT BUILT (identity = strings only) | — | — |
-| Network Policy Engine (§29, §5.3) | PARTIAL (request-level tracker/ad blocking vs governed blocklist + built-in rules, per-site shield, HTTPS-first; declared network/VPN state surfaced in Settings and exported in the governed packet — no hidden activity. No built-in VPN engine (declared-only) and no full per-origin policy engine yet) | (in-browser) | — |
+| Network Policy Engine (§29, §5.3) | PARTIAL→strong: request-level tracker/ad blocking (governed blocklist + built-in), per-site shield, HTTPS-first; **governed network layer** — browser proxy routing (`config\network.v1.json`, WebView2 `--proxy-server`), BYO-WireGuard up/down/status (`recognition_vpn_wireguard_v1`), system-tunnel detect/attest (`recognition_vpn_detect_v1`); network state surfaced in Settings + exported in the packet. Recognition operates no exit servers (BYO); no full per-origin policy engine yet | (in-browser) + `recognition_vpn_*` | — |
+| Formal verification (OSF §9) | PARTIAL (TLA+/TLC, CI-enforced): evidence-chain **Sound** + **TamperEvidence**, locked-startup **FailClosed**. Crypto-composition proofs planned (`docs/formal/CRYPTO_PROOFS_PLAN.md`) | `RUN_TLA_CHECK_V1` / `formal\*.tla` | `RECOGNITION_TLA_CHECK_V1_OK` |
 | Certificate Manager | NOT BUILT | — | — |
 | Sync Engine (§28) | NOT BUILT | — | — |
 | Package Builder / Installer / Updater / Release / License | NOT BUILT | — | — |

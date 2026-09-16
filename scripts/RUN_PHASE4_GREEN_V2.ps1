@@ -60,6 +60,8 @@ foreach($rel in @(
   "recognition_verify_softwareid_v1.ps1",
   "recognition_seal_softwareid_v1.ps1",
   "_selftest_recognition_softwareid_v1.ps1",
+  "recognition_vpn_wireguard_v1.ps1",
+  "recognition_vpn_detect_v1.ps1",
   "recognition_locked_startup_browser_v1.ps1",
   "RUN_RELEASE_GATE_V1.ps1",
   "RUN_PACKAGE_DIST_V1.ps1",

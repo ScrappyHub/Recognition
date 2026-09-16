@@ -12,6 +12,11 @@ browser/obj/
 bin/
 obj/
 
+# TLA+ tooling (downloaded) + TLC scratch
+formal/tla2tools.jar
+formal/states/
+formal/*.old
+
 # Local generated evidence — receipts are per-machine append-only logs and may
 # contain user data (e.g. installed-extension host permissions). Publish the
 # spec + code + trust root + attestation bundles, not raw local receipts.

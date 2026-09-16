@@ -923,9 +923,16 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                       "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span><span class='pill'>Encrypted at rest</span></div>");
 
             sb.Append("<h1 style='font-size:16px'>Network (&sect;5.3 / &sect;29)</h1>");
-            sb.Append("<div class='kv'><div class='k'>VPN / tunnel</div><div class='v'>not connected (declared) &mdash; Recognition ships no built-in VPN; state is declared, never hidden</div></div>");
-            sb.Append("<div class='kv'><div class='k'>Egress policy</div><div class='v'>canonical &mdash; HTTPS-first, tracker/ad hosts blocked, no telemetry or beacons; all requests are user-initiated</div></div>");
-            sb.Append("<div class='kv'><div class='k'>Blocked this session</div><div class='v'>" + _blockedSession + " tracker/ad requests refused at the network layer</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Tunnel mode</div><div class='v'>" + (NetActive() ? ("active &mdash; " + Esc(_netMode)) : "off (direct connection)") + "</div></div>");
+            if (_netMode == "proxy")
+                sb.Append("<div class='kv'><div class='k'>Proxy</div><div class='v'>" + (string.IsNullOrWhiteSpace(_netProxy) ? "(none configured)" : Esc(_netProxy)) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Exit region</div><div class='v'>" + (string.IsNullOrEmpty(_netExitRegion) ? "(unset)" : Esc(_netExitRegion)) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Egress policy</div><div class='v'>canonical &mdash; HTTPS-first, trackers/ads blocked, no telemetry or beacons; all requests user-initiated</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Blocked this session</div><div class='v'>" + _blockedSession + " tracker/ad requests refused</div></div>");
+            if (!string.IsNullOrWhiteSpace(_netExitCheckUrl))
+                sb.Append("<div style='margin:10px 0 18px'><a class='btn ghost' onclick=\"send('verify-exit')\">Verify exit IP</a> <span class='u'>&nbsp;opens " + Esc(_netExitCheckUrl) + " (only when you click)</span></div>");
+            else
+                sb.Append("<div class='muted' style='margin:8px 0 18px'>Configure mode/proxy/exit in <code>config\\network.v1.json</code>. Recognition operates no exit servers &mdash; bring your own proxy or WireGuard tunnel (see scripts\\recognition_vpn_*).</div>");
 
             sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
             var (sidState, sidId) = SoftwareIdState();
@@ -985,6 +992,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                     Status("history cleared");
                     break;
                 case "export-session": Export_Click(this, new RoutedEventArgs()); break;
+                case "verify-exit": if (!string.IsNullOrWhiteSpace(_netExitCheckUrl)) NavigateTab(tab, _netExitCheckUrl); break;
                 case "open-profile": OpenFolder(Path.Combine(_repoRoot, "runtime", "browser_profile")); break;
                 case "open-packets": OpenFolder(Path.Combine(_repoRoot, "packets")); break;
             }
@@ -1266,8 +1274,13 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 WriteLf(Path.Combine(dir, "events.ndjson"), sb.ToString());
 
                 WriteLf(Path.Combine(dir, "vpn_state.json"),
-                    "{" + J("schema") + ":" + J("recognition.vpn_state.v1") + "," + J("connected") + ":false," +
-                          J("provider") + ":null," + J("exit_region") + ":null," + J("since_utc") + ":null," + J("policy") + ":" + J("canonical") + "," +
+                    "{" + J("schema") + ":" + J("recognition.vpn_state.v1") + "," +
+                          J("connected") + ":" + (NetActive() ? "true" : "false") + "," +
+                          J("mode") + ":" + J(_netMode) + "," +
+                          J("proxy_configured") + ":" + ((_netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy)) ? "true" : "false") + "," +
+                          J("provider") + ":null," +
+                          J("exit_region") + ":" + (string.IsNullOrEmpty(_netExitRegion) ? "null" : J(_netExitRegion)) + "," +
+                          J("since_utc") + ":null," + J("policy") + ":" + J("canonical") + "," +
                           J("https_first") + ":true," + J("telemetry") + ":false," +
                           J("tracker_blocking") + ":" + (_blockingEnabled ? "true" : "false") + "," +
                           J("blocked_session") + ":" + _blockedSession + "}");
