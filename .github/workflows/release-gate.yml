@@ -1,0 +1,33 @@
+name: release-gate
+
+# Proves every push: packet law + prove-all (crypto, vault, event/identity/history/
+# chain-anchor, attestation, signed SoftwareID) + publish scan + browser build.
+# All verification is deterministic and offline; the passphrase below only drives the
+# self-contained selftests (which set up and tear down ephemeral vaults).
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run the strict release gate
+        shell: pwsh
+        env:
+          RECOGNITION_PASSPHRASE: ci-selftest-passphrase
+        run: |
+          $o = & pwsh -File scripts/RUN_RELEASE_GATE_V1.ps1 -RepoRoot . -RequireBrowserBuild *>&1 | Out-String
+          Write-Host $o
+          if ($o -notmatch 'RECOGNITION_RELEASE_GATE_V1_OK') { throw 'RELEASE GATE NOT GREEN' }
+          Write-Host 'RECOGNITION_RELEASE_GATE_V1_OK confirmed by CI' -ForegroundColor Green

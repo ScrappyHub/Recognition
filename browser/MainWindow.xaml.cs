@@ -51,6 +51,12 @@ namespace Recognition.Browser
         private CoreWebView2Environment? _privateEnv;
         private string? _privateDir;
 
+        // Governed network / VPN (config/network.v1.json)
+        private string _netMode = "off";       // off | proxy | wireguard | system
+        private string _netProxy = "";
+        private string _netExitRegion = "";
+        private string _netExitCheckUrl = "";
+
         private const string StartMarker = "recognition:start";
 
         private const string ShortcutScript = @"
@@ -133,9 +139,10 @@ document.addEventListener('keydown',function(e){
                 LoadDownloads();
                 LoadSettings();
                 LoadBlocklist();
+                LoadNetworkConfig();
 
                 Status("initializing web engine…");
-                _env = await CoreWebView2Environment.CreateAsync(null, userData, new CoreWebView2EnvironmentOptions());
+                _env = await CoreWebView2Environment.CreateAsync(null, userData, NetOpts());
 
                 Status("verifying locked startup (identity · policy · trust · evidence)…");
                 _preflightOk = await Task.Run(Preflight);
@@ -191,7 +198,7 @@ document.addEventListener('keydown',function(e){
             if (_privateEnv != null) return _privateEnv;
             _privateDir = Path.Combine(Path.GetTempPath(), "rb-private-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_privateDir);
-            _privateEnv = await CoreWebView2Environment.CreateAsync(null, _privateDir, new CoreWebView2EnvironmentOptions());
+            _privateEnv = await CoreWebView2Environment.CreateAsync(null, _privateDir, NetOpts());
             return _privateEnv;
         }
 
@@ -475,6 +482,33 @@ document.addEventListener('keydown',function(e){
             }
             catch { }
         }
+
+        // ---- governed network / VPN (config/network.v1.json) --------------------
+        private void LoadNetworkConfig()
+        {
+            try
+            {
+                var p = Path.Combine(_repoRoot, "config", "network.v1.json");
+                if (!File.Exists(p)) return;
+                using var doc = JsonDocument.Parse(File.ReadAllText(p));
+                var r = doc.RootElement;
+                _netMode        = Get(r, "mode"); if (string.IsNullOrEmpty(_netMode)) _netMode = "off";
+                _netProxy       = Get(r, "proxy");
+                _netExitRegion  = Get(r, "exit_region");
+                _netExitCheckUrl = Get(r, "exit_check_url");
+            }
+            catch { }
+        }
+
+        // Browser engine options — routes the browser through the configured proxy (proxy mode).
+        private CoreWebView2EnvironmentOptions NetOpts()
+        {
+            var o = new CoreWebView2EnvironmentOptions();
+            if (_netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy))
+                o.AdditionalBrowserArguments = "--proxy-server=\"" + _netProxy + "\"";
+            return o;
+        }
+        private bool NetActive() => _netMode != "off" && !(_netMode == "proxy" && string.IsNullOrWhiteSpace(_netProxy));
 
         // ---- keyboard shortcuts -------------------------------------------------
 

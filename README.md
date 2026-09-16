@@ -1,6 +1,46 @@
 # Recognition
 
-A deterministic, governed, encrypted browser runtime. Local-first, offline-first, evidence-producing. Every operation emits a deterministic receipt; nothing important exists without integrity.
+A deterministic, governed, encrypted, cryptographically-verifiable web browser. Local-first, offline-first, evidence-producing. Every operation emits a deterministic receipt; nothing important exists without integrity — and the browser **verifies its own signed software identity at every launch** and refuses to open if a single byte has changed.
+
+## Download
+
+**[⬇ Download Recognition for Windows (latest release)](https://github.com/ScrappyHub/Recognition/releases/latest)**
+
+Self-contained — no .NET install required. Extract the zip and run
+`pwsh -File installer\RECOGNITION_INSTALL_V1.ps1` (per-user; Start Menu + Desktop
+shortcuts + uninstaller). Windows 10/11; the WebView2 runtime ships with both.
+
+## What it is
+
+A full, private browser (multi-tab with favicons, omnibox, bookmarks, find-in-page,
+zoom, keyboard shortcuts, **private/incognito** mode) wrapped around governance no
+mainstream browser has:
+
+- **Signed SoftwareID launch check** — `SHA-256` of the browser's own bytes, Ed25519-signed
+  against a pinned trust root, verified fail-closed before the window opens.
+- **Tracker/ad blocking** at the network layer with a per-site shield.
+- **HTTPS-first, no autofill, no telemetry**; local history/bookmarks/downloads
+  **encrypted at rest** (Windows DPAPI, per-user).
+- **Governed session export** — one click produces a signed, hash-chained evidence packet.
+- **Self-owned identity chain** — no external identity service.
+
+Design paper: *Recognition: Privacy-Preserving and Cryptographically Verifiable Web
+Interaction Infrastructure* (v1.0, Feb 2026). Implementation status vs. the paper:
+`docs/OSF_IMPLEMENTATION_STATUS_V1_1.md`.
+
+## Build & prove it yourself
+
+```powershell
+pwsh -File browser\build.ps1                                  # build the browser
+$env:RECOGNITION_PASSPHRASE = "any-value-for-selftests"
+pwsh -File scripts\RUN_RELEASE_GATE_V1.ps1 -RepoRoot . -RequireBrowserBuild
+#   -> RECOGNITION_RELEASE_GATE_V1_OK  (packet law + prove-all + publish scan + browser build)
+pwsh -File scripts\RUN_PACKAGE_DIST_V1.ps1 -RepoRoot .        # build the downloadable zip
+```
+
+Every push is also verified automatically by CI (`.github/workflows/release-gate.yml`).
+
+---
 
 Canonical direction: see `docs/CANONICAL_HANDOFF_V1.md`.
 Current audit and roadmap: see `docs/RECOGNITION_AUDIT_V1.md`.

@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "recognition.network.v1",
+  "title": "Recognition network / VPN configuration",
+  "type": "object",
+  "required": ["schema", "mode"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": "recognition.network.v1" },
+    "mode": { "enum": ["off", "proxy", "wireguard", "system"] },
+    "proxy": { "type": "string", "description": "scheme://host:port for the browser proxy (proxy mode). Empty when unused." },
+    "exit_region": { "type": "string" },
+    "exit_check_url": { "type": "string", "description": "IP-echo URL, used only on explicit Verify Exit." },
+    "wireguard_config": { "type": "string", "description": "path to a BYO WireGuard .conf" }
+  }
+}

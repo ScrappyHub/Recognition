@@ -1,0 +1,9 @@
+{
+  "schema": "recognition.network.v1",
+  "mode": "off",
+  "proxy": "",
+  "exit_region": "",
+  "exit_check_url": "",
+  "wireguard_config": "",
+  "notes": "mode: off | proxy | wireguard | system. proxy: e.g. socks5://127.0.0.1:9050 or http://host:port (used in 'proxy' mode; routes the browser through it). exit_check_url: an IP-echo you trust, used only when you click Verify Exit (never called automatically). wireguard_config: path to a .conf for BYO WireGuard (managed by scripts/recognition_vpn_wireguard_v1.ps1). No exit servers are operated by Recognition; you bring your own tunnel/proxy."
+}
