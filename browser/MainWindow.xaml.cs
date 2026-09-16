@@ -173,6 +173,7 @@ document.addEventListener('keydown',function(e){
 
                 await OpenNewTabAsync();
                 UpdateShield();
+                UpdateVpn();
                 if (_extEnabled && Active != null) await LoadExtensionsAsync(Active);
                 Status("locked startup OK — governed profile: " + userData);
             }
@@ -316,7 +317,7 @@ document.addEventListener('keydown',function(e){
             if (!ReferenceEquals(e.OriginalSource, Tabs)) return;
             ShowActiveWebView();
             var a = Active; if (a == null) return;
-            SetAddress(a); UpdateStar(a); UpdateShield();
+            SetAddress(a); UpdateStar(a); UpdateShield(); UpdateVpn();
             Status(a.IsInternal ? ("recognition:" + a.Internal)
                                 : $"{a.CurrentTitle}  ({a.Visits.Count} visit(s) this tab)");
         }
@@ -470,6 +471,19 @@ document.addEventListener('keydown',function(e){
                 : "Tracker/ad blocking is OFF — click for settings";
         }
         private void Shield_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("settings");
+
+        // ---- VPN toolbar indicator ---------------------------------------------
+        private void UpdateVpn()
+        {
+            bool on = NetActive();
+            var region = string.IsNullOrEmpty(_netExitRegion) ? "on" : _netExitRegion;
+            VpnBtn.Content = on ? ("\U0001F310 " + region) : "\U0001F310";
+            VpnBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0x6F, 0xCF, 0x97) : Color.FromRgb(0x8B, 0x90, 0x9A));
+            VpnBtn.ToolTip = on
+                ? ("VPN ON — " + _netMode + (string.IsNullOrEmpty(_netExitRegion) ? "" : " · " + _netExitRegion) + "  (click for settings)")
+                : "VPN OFF — click to configure";
+        }
+        private void Vpn_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("settings");
 
         // ---- settings persistence ----------------------------------------------
 
@@ -1104,7 +1118,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 case "open-profile": OpenFolder(Path.Combine(_repoRoot, "runtime", "browser_profile")); break;
                 case "open-packets": OpenFolder(Path.Combine(_repoRoot, "packets")); break;
                 case "vpn-off":
-                    _netMode = "off"; _netProxy = ""; _netExitRegion = ""; SaveNetworkConfig();
+                    _netMode = "off"; _netProxy = ""; _netExitRegion = ""; SaveNetworkConfig(); UpdateVpn();
                     if (tab.Internal == "settings") LoadInternal(tab, "settings");
                     Status("VPN off — direct connection (applies on next launch)");
                     break;
@@ -1119,7 +1133,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 if (ep != null)
                 {
                     _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
-                    SaveNetworkConfig();
+                    SaveNetworkConfig(); UpdateVpn();
                     if (tab.Internal == "settings") LoadInternal(tab, "settings");
                     Status("VPN exit set to " + _netExitRegion + " (applies on next launch)");
                 }
@@ -1139,7 +1153,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (best != null)
             {
                 _netMode = "proxy"; _netProxy = best.Proxy; _netExitRegion = string.IsNullOrEmpty(best.Region) ? best.Name : best.Region;
-                SaveNetworkConfig();
+                SaveNetworkConfig(); UpdateVpn();
                 Status($"best placement: {_netExitRegion} ({Math.Round(bestMs)} ms) — applies on next launch");
             }
             else Status("no reachable endpoint found");
