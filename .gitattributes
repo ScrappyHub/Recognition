@@ -1,0 +1,7 @@
+# Recognition is a byte-exact, evidence-producing repo: hashes, signatures, packet
+# manifests, sha256sums, attestation bundles, and the hash-chained receipts are all
+# verified over EXACT file bytes. Any line-ending conversion (e.g. Windows CI checking
+# files out as CRLF) would change those bytes and break signature/packet verification.
+#
+# Therefore: NEVER convert line endings for any file, on any platform.
+* -text
