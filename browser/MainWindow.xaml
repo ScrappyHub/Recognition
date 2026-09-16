@@ -17,20 +17,22 @@
     <Border Grid.Row="0" Background="#1B1E24" BorderBrush="#2A2E36" BorderThickness="0,0,0,1">
       <Grid Margin="8,6">
         <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>  <!-- back -->
+          <ColumnDefinition Width="Auto"/>  <!-- forward -->
+          <ColumnDefinition Width="Auto"/>  <!-- reload -->
+          <ColumnDefinition Width="Auto"/>  <!-- home -->
+          <ColumnDefinition Width="*"/>     <!-- address -->
+          <ColumnDefinition Width="Auto"/>  <!-- go -->
+          <ColumnDefinition Width="Auto"/>  <!-- new tab -->
+          <ColumnDefinition Width="Auto"/>  <!-- menu -->
+          <ColumnDefinition Width="Auto"/>  <!-- export -->
         </Grid.ColumnDefinitions>
         <Button x:Name="BackBtn"   Grid.Column="0" Content="&#x25C0;" ToolTip="Back (Alt+Left)"     Click="Back_Click"    Style="{StaticResource NavBtn}"/>
         <Button x:Name="FwdBtn"    Grid.Column="1" Content="&#x25B6;" ToolTip="Forward (Alt+Right)" Click="Forward_Click" Style="{StaticResource NavBtn}"/>
         <Button x:Name="ReloadBtn" Grid.Column="2" Content="&#x27F3;" ToolTip="Reload (Ctrl+R)"     Click="Reload_Click"  Style="{StaticResource NavBtn}"/>
+        <Button x:Name="HomeBtn"   Grid.Column="3" Content="&#x2302;" ToolTip="Home (Alt+Home)"     Click="Home_Click"    Style="{StaticResource NavBtn}"/>
 
-        <Border x:Name="AddrBorder" Grid.Column="3" Background="#0E1015" BorderBrush="#2E333C" BorderThickness="1" CornerRadius="7" Margin="8,0">
+        <Border x:Name="AddrBorder" Grid.Column="4" Background="#0E1015" BorderBrush="#2E333C" BorderThickness="1" CornerRadius="7" Margin="8,0">
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="Auto"/>
@@ -52,13 +54,15 @@
           </Grid>
         </Border>
 
-        <Button x:Name="GoBtn"     Grid.Column="4" Content="Go"       Click="Go_Click"     Style="{StaticResource NavBtn}"/>
-        <Button x:Name="NewTabBtn" Grid.Column="5" Content="&#x2795;" ToolTip="New tab (Ctrl+T)" Click="NewTab_Click" Style="{StaticResource NavBtn}"/>
-        <Button x:Name="MenuBtn"   Grid.Column="6" Content="&#x2630;" ToolTip="Menu"       Click="Menu_Click"   Style="{StaticResource NavBtn}">
+        <Button x:Name="GoBtn"     Grid.Column="5" Content="Go"       Click="Go_Click"     Style="{StaticResource NavBtn}"/>
+        <Button x:Name="NewTabBtn" Grid.Column="6" Content="&#x2795;" ToolTip="New tab (Ctrl+T)" Click="NewTab_Click" Style="{StaticResource NavBtn}"/>
+        <Button x:Name="MenuBtn"   Grid.Column="7" Content="&#x2630;" ToolTip="Menu"       Click="Menu_Click"   Style="{StaticResource NavBtn}">
           <Button.ContextMenu>
             <ContextMenu>
               <MenuItem Header="New tab"          Click="MenuNewTab_Click"     InputGestureText="Ctrl+T"/>
               <MenuItem Header="New private tab"  Click="MenuNewPrivate_Click" InputGestureText="Ctrl+Shift+N"/>
+              <MenuItem Header="Home"             Click="MenuHome_Click"       InputGestureText="Alt+Home"/>
+              <MenuItem Header="Set home to current page" Click="MenuSetHome_Click"/>
               <Separator/>
               <MenuItem Header="Bookmarks" Click="MenuBookmarks_Click"/>
               <MenuItem Header="History"   Click="MenuHistory_Click"/>
@@ -74,7 +78,7 @@
             </ContextMenu>
           </Button.ContextMenu>
         </Button>
-        <Button x:Name="ExportBtn" Grid.Column="7" Content="Export Session" ToolTip="Export a governed evidence packet"
+        <Button x:Name="ExportBtn" Grid.Column="8" Content="Export Session" ToolTip="Export a governed evidence packet"
                 Click="Export_Click" Style="{StaticResource AccentBtn}"/>
       </Grid>
     </Border>

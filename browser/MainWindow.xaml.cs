@@ -56,6 +56,17 @@ namespace Recognition.Browser
         private string _netProxy = "";
         private string _netExitRegion = "";
         private string _netExitCheckUrl = "";
+        private bool _netAutoOptimize;
+        private sealed class NetEndpoint { public string Name = ""; public string Region = ""; public string Proxy = ""; }
+        private readonly List<NetEndpoint> _netEndpoints = new();
+
+        // Home page (config: browser_settings.json home_url)
+        private string _homeUrl = "recognition:start";
+
+        // Governed Chromium extensions (config/extensions.v1.json — explicit allowlist)
+        private bool _extEnabled;
+        private bool _extLoaded;
+        private readonly List<string> _extPaths = new();
 
         private const string StartMarker = "recognition:start";
 
@@ -140,6 +151,7 @@ document.addEventListener('keydown',function(e){
                 LoadSettings();
                 LoadBlocklist();
                 LoadNetworkConfig();
+                LoadExtensionsConfig();
 
                 Status("initializing web engine…");
                 _env = await CoreWebView2Environment.CreateAsync(null, userData, NetOpts());
@@ -161,6 +173,7 @@ document.addEventListener('keydown',function(e){
 
                 await OpenNewTabAsync();
                 UpdateShield();
+                if (_extEnabled && Active != null) await LoadExtensionsAsync(Active);
                 Status("locked startup OK — governed profile: " + userData);
             }
             catch (Exception ex) { ShowFatal("Startup error", ex.ToString()); }
@@ -468,7 +481,9 @@ document.addEventListener('keydown',function(e){
                 var p = SettingsPath();
                 if (!File.Exists(p)) return;
                 using var doc = JsonDocument.Parse(File.ReadAllText(p));
-                if (doc.RootElement.TryGetProperty("blocking_enabled", out var b)) _blockingEnabled = b.GetBoolean();
+                var r = doc.RootElement;
+                if (r.TryGetProperty("blocking_enabled", out var b)) _blockingEnabled = b.GetBoolean();
+                if (r.TryGetProperty("home_url", out var hu)) { var s = hu.GetString(); if (!string.IsNullOrWhiteSpace(s)) _homeUrl = s; }
             }
             catch { }
         }
@@ -478,7 +493,8 @@ document.addEventListener('keydown',function(e){
             {
                 var p = SettingsPath();
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
-                File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "}\n", new UTF8Encoding(false));
+                File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "," +
+                                          J("home_url") + ":" + J(_homeUrl) + "}\n", new UTF8Encoding(false));
             }
             catch { }
         }
@@ -496,19 +512,83 @@ document.addEventListener('keydown',function(e){
                 _netProxy       = Get(r, "proxy");
                 _netExitRegion  = Get(r, "exit_region");
                 _netExitCheckUrl = Get(r, "exit_check_url");
+                _netAutoOptimize = r.TryGetProperty("auto_optimize", out var ao) && ao.ValueKind == JsonValueKind.True;
+                _netEndpoints.Clear();
+                if (r.TryGetProperty("endpoints", out var eps) && eps.ValueKind == JsonValueKind.Array)
+                    foreach (var ep in eps.EnumerateArray())
+                        _netEndpoints.Add(new NetEndpoint { Name = Get(ep, "name"), Region = Get(ep, "region"), Proxy = Get(ep, "proxy") });
             }
             catch { }
         }
 
-        // Browser engine options — routes the browser through the configured proxy (proxy mode).
+        private void SaveNetworkConfig()
+        {
+            try
+            {
+                var sb = new StringBuilder("{" + J("schema") + ":" + J("recognition.network.v1") + "," +
+                    J("mode") + ":" + J(_netMode) + "," + J("proxy") + ":" + J(_netProxy) + "," +
+                    J("exit_region") + ":" + J(_netExitRegion) + "," + J("exit_check_url") + ":" + J(_netExitCheckUrl) + "," +
+                    J("auto_optimize") + ":" + (_netAutoOptimize ? "true" : "false") + "," + J("endpoints") + ":[");
+                for (int i = 0; i < _netEndpoints.Count; i++)
+                {
+                    var ep = _netEndpoints[i]; if (i > 0) sb.Append(",");
+                    sb.Append("{" + J("name") + ":" + J(ep.Name) + "," + J("region") + ":" + J(ep.Region) + "," + J("proxy") + ":" + J(ep.Proxy) + "}");
+                }
+                sb.Append("]}");
+                var p = Path.Combine(_repoRoot, "config", "network.v1.json");
+                Directory.CreateDirectory(Path.GetDirectoryName(p)!);
+                File.WriteAllText(p, sb.ToString() + "\n", new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        // Browser engine options — routes the browser through the configured proxy (proxy mode)
+        // and enables governed Chromium extensions when configured.
         private CoreWebView2EnvironmentOptions NetOpts()
         {
             var o = new CoreWebView2EnvironmentOptions();
+            o.AreBrowserExtensionsEnabled = _extEnabled;
             if (_netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy))
                 o.AdditionalBrowserArguments = "--proxy-server=\"" + _netProxy + "\"";
             return o;
         }
         private bool NetActive() => _netMode != "off" && !(_netMode == "proxy" && string.IsNullOrWhiteSpace(_netProxy));
+
+        // ---- governed Chromium extensions (config/extensions.v1.json allowlist) --
+        private void LoadExtensionsConfig()
+        {
+            _extEnabled = false; _extLoaded = false; _extPaths.Clear();
+            try
+            {
+                var p = Path.Combine(_repoRoot, "config", "extensions.v1.json");
+                if (!File.Exists(p)) return;
+                using var doc = JsonDocument.Parse(File.ReadAllText(p));
+                var r = doc.RootElement;
+                _extEnabled = r.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.True;
+                if (r.TryGetProperty("load", out var l) && l.ValueKind == JsonValueKind.Array)
+                    foreach (var it in l.EnumerateArray()) { var s = it.GetString(); if (!string.IsNullOrWhiteSpace(s)) _extPaths.Add(s); }
+            }
+            catch { }
+        }
+
+        private async Task LoadExtensionsAsync(BrowserTab tab)
+        {
+            if (_extLoaded || !_extEnabled || tab.Web.CoreWebView2 == null) return;
+            _extLoaded = true;
+            int ok = 0;
+            try
+            {
+                var profile = tab.Web.CoreWebView2.Profile;
+                foreach (var rel in _extPaths)
+                {
+                    var path = Path.IsPathRooted(rel) ? rel : Path.Combine(_repoRoot, rel);
+                    if (!Directory.Exists(path)) continue;
+                    try { await profile.AddBrowserExtensionAsync(path); ok++; } catch { }
+                }
+            }
+            catch { }
+            if (ok > 0) Status($"loaded {ok} governed extension(s)");
+        }
 
         // ---- keyboard shortcuts -------------------------------------------------
 
@@ -530,6 +610,7 @@ document.addEventListener('keydown',function(e){
             else if (ctrl && e.Key == Key.Tab) m = (Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? "prevtab" : "nexttab";
             else if (alt && e.Key == Key.Left) m = "back";
             else if (alt && e.Key == Key.Right) m = "forward";
+            else if (alt && e.Key == Key.Home) m = "home";
             if (m != null) { e.Handled = true; HandleShortcut(m); }
         }
 
@@ -552,7 +633,19 @@ document.addEventListener('keydown',function(e){
                 case "prevtab": CycleTab(-1); break;
                 case "back": Back_Click(this, new RoutedEventArgs()); break;
                 case "forward": Forward_Click(this, new RoutedEventArgs()); break;
+                case "home": Home_Click(this, new RoutedEventArgs()); break;
             }
+        }
+
+        // ---- home ---------------------------------------------------------------
+        private void Home_Click(object sender, RoutedEventArgs e) { var a = Active; if (a != null) NavigateTab(a, _homeUrl); }
+        private void MenuHome_Click(object sender, RoutedEventArgs e) => Home_Click(sender, e);
+        private void MenuSetHome_Click(object sender, RoutedEventArgs e)
+        {
+            var a = Active;
+            if (a != null && !a.IsInternal && !string.IsNullOrEmpty(a.CurrentUrl)) { _homeUrl = a.CurrentUrl; Status("home set to " + _homeUrl); }
+            else { _homeUrl = "recognition:start"; Status("home set to the start page"); }
+            SaveSettings();
         }
 
         private void CycleTab(int dir)
@@ -876,7 +969,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
         private string BookmarksHtml()
         {
             var sb = new StringBuilder(PageHead);
-            sb.Append("<title>Bookmarks</title><h1>Bookmarks</h1><div class='muted'>Saved in runtime\\bookmarks.v1.ndjson &mdash; " +
+            sb.Append("<title>Bookmarks</title><h1>Bookmarks</h1><div class='muted'>Encrypted at rest in runtime\\bookmarks.v1.enc (DPAPI) &mdash; " +
                       _bookmarks.Count + " saved.</div>");
             if (_bookmarks.Count == 0) sb.Append("<div class='empty'>No bookmarks yet. Click the &#9734; in the address bar to save a page.</div>");
             else
@@ -891,7 +984,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
         private string DownloadsHtml()
         {
             var sb = new StringBuilder(PageHead);
-            sb.Append("<title>Downloads</title><h1>Downloads</h1><div class='muted'>Tracked in runtime\\downloads.v1.ndjson.</div>");
+            sb.Append("<title>Downloads</title><h1>Downloads</h1><div class='muted'>Encrypted at rest in runtime\\downloads.v1.enc (DPAPI).</div>");
             if (_downloads.Count == 0) sb.Append("<div class='empty'>No downloads yet.</div>");
             else
                 foreach (var d in Enumerable.Reverse(_downloads).Take(500))
@@ -918,21 +1011,36 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div class='row'><div><div class='t'>Local data encryption</div>" +
                       "<div class='u'>History, bookmarks &amp; downloads are encrypted at rest (Windows DPAPI, per-user) &mdash; ciphertext on disk, bound to your account.</div></div>" +
                       "<div class='ts'><span class='pill'>&#128274; at rest</span></div></div>");
+            sb.Append("<div class='row'><div><div class='t'>Passkeys / WebAuthn</div>" +
+                      "<div class='u'>Sign in with platform passkeys (Windows Hello) or security keys, on HTTPS origins. No passwords are stored by the browser.</div></div>" +
+                      "<div class='ts'><span class='pill'>supported</span></div></div>");
             sb.Append("<div style='margin:8px 0 20px'><span class='pill'>&#128737; Blocking</span><span class='pill'>HTTPS-first</span>" +
                       "<span class='pill'>No password autosave</span><span class='pill'>No general autofill</span>" +
                       "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span><span class='pill'>Encrypted at rest</span></div>");
 
-            sb.Append("<h1 style='font-size:16px'>Network (&sect;5.3 / &sect;29)</h1>");
-            sb.Append("<div class='kv'><div class='k'>Tunnel mode</div><div class='v'>" + (NetActive() ? ("active &mdash; " + Esc(_netMode)) : "off (direct connection)") + "</div></div>");
-            if (_netMode == "proxy")
-                sb.Append("<div class='kv'><div class='k'>Proxy</div><div class='v'>" + (string.IsNullOrWhiteSpace(_netProxy) ? "(none configured)" : Esc(_netProxy)) + "</div></div>");
-            sb.Append("<div class='kv'><div class='k'>Exit region</div><div class='v'>" + (string.IsNullOrEmpty(_netExitRegion) ? "(unset)" : Esc(_netExitRegion)) + "</div></div>");
-            sb.Append("<div class='kv'><div class='k'>Egress policy</div><div class='v'>canonical &mdash; HTTPS-first, trackers/ads blocked, no telemetry or beacons; all requests user-initiated</div></div>");
-            sb.Append("<div class='kv'><div class='k'>Blocked this session</div><div class='v'>" + _blockedSession + " tracker/ad requests refused</div></div>");
-            if (!string.IsNullOrWhiteSpace(_netExitCheckUrl))
-                sb.Append("<div style='margin:10px 0 18px'><a class='btn ghost' onclick=\"send('verify-exit')\">Verify exit IP</a> <span class='u'>&nbsp;opens " + Esc(_netExitCheckUrl) + " (only when you click)</span></div>");
+            sb.Append("<h1 style='font-size:16px'>Network / VPN (&sect;5.3 / &sect;29)</h1>");
+            sb.Append("<div class='row'><div><div class='t'>Tunnel</div><div class='u'>" +
+                      (NetActive() ? ("ON &mdash; " + Esc(_netMode) + (string.IsNullOrEmpty(_netExitRegion) ? "" : " &middot; " + Esc(_netExitRegion))) : "OFF (direct connection)") +
+                      "</div></div><div class='ts'><a class='btn" + (NetActive() ? " ghost" : "") + "' onclick=\"send('vpn-off')\">Off</a></div></div>");
+            foreach (var ep in _netEndpoints)
+            {
+                var label = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
+                var active = (_netMode == "proxy" && _netProxy == ep.Proxy);
+                sb.Append("<div class='row'><div><div class='t'>" + Esc(label) + (active ? " <span class='pill'>active</span>" : "") + "</div>" +
+                          "<div class='u'>" + Esc(ep.Proxy) + "</div></div>" +
+                          "<div class='ts'><a class='btn ghost' onclick=\"send('vpn-pick:" + Attr(ep.Name) + "')\">Use</a></div></div>");
+            }
+            if (_netEndpoints.Count > 0)
+                sb.Append("<div style='margin:10px 0 6px'><a class='btn' onclick=\"send('vpn-optimize')\">Auto-optimize (best placement)</a></div>");
             else
-                sb.Append("<div class='muted' style='margin:8px 0 18px'>Configure mode/proxy/exit in <code>config\\network.v1.json</code>. Recognition operates no exit servers &mdash; bring your own proxy or WireGuard tunnel (see scripts\\recognition_vpn_*).</div>");
+                sb.Append("<div class='muted'>Add exit endpoints to <code>config\\network.v1.json</code> (name / region / proxy, e.g. <code>socks5://host:1080</code>) to choose one or auto-optimize. Recognition runs no exit servers &mdash; bring your own (self-hosted, a provider proxy, WireGuard, or Tor).</div>");
+            sb.Append("<div class='muted' style='margin:6px 0 6px'>Routing changes apply on next launch (the engine proxy is set at startup). Egress: HTTPS-first, trackers/ads blocked, no telemetry &mdash; all requests user-initiated.</div>");
+            if (!string.IsNullOrWhiteSpace(_netExitCheckUrl))
+                sb.Append("<div style='margin:2px 0 18px'><a class='btn ghost' onclick=\"send('verify-exit')\">Verify exit IP</a> <span class='u'>&nbsp;opens " + Esc(_netExitCheckUrl) + " (only when you click)</span></div>");
+
+            sb.Append("<h1 style='font-size:16px'>Extensions</h1>");
+            sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + _extPaths.Count + " allowlisted") : "off") + "</div></div>");
+            sb.Append("<div class='muted' style='margin:6px 0 18px'>Governed by an explicit allowlist in <code>config\\extensions.v1.json</code> (<code>enabled</code> + unpacked extension folder paths). Only allowlisted extensions load.</div>");
 
             sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
             var (sidState, sidId) = SoftwareIdState();
@@ -995,7 +1103,64 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 case "verify-exit": if (!string.IsNullOrWhiteSpace(_netExitCheckUrl)) NavigateTab(tab, _netExitCheckUrl); break;
                 case "open-profile": OpenFolder(Path.Combine(_repoRoot, "runtime", "browser_profile")); break;
                 case "open-packets": OpenFolder(Path.Combine(_repoRoot, "packets")); break;
+                case "vpn-off":
+                    _netMode = "off"; _netProxy = ""; _netExitRegion = ""; SaveNetworkConfig();
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
+                    Status("VPN off — direct connection (applies on next launch)");
+                    break;
+                case "vpn-optimize":
+                    Status("probing endpoints for best placement…"); _ = OptimizeVpnAsync(tab);
+                    break;
             }
+            if (msg.StartsWith("vpn-pick:"))
+            {
+                var name = msg.Substring("vpn-pick:".Length);
+                var ep = _netEndpoints.FirstOrDefault(x => x.Name == name);
+                if (ep != null)
+                {
+                    _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
+                    SaveNetworkConfig();
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
+                    Status("VPN exit set to " + _netExitRegion + " (applies on next launch)");
+                }
+            }
+        }
+
+        // Pick the lowest-latency configured endpoint (user-initiated; no hidden calls).
+        private async Task OptimizeVpnAsync(BrowserTab tab)
+        {
+            NetEndpoint? best = null; double bestMs = double.MaxValue;
+            foreach (var ep in _netEndpoints)
+            {
+                var (host, port) = ParseHostPort(ep.Proxy); if (host == null) continue;
+                var ms = await ProbeAsync(host, port);
+                if (ms >= 0 && ms < bestMs) { bestMs = ms; best = ep; }
+            }
+            if (best != null)
+            {
+                _netMode = "proxy"; _netProxy = best.Proxy; _netExitRegion = string.IsNullOrEmpty(best.Region) ? best.Name : best.Region;
+                SaveNetworkConfig();
+                Status($"best placement: {_netExitRegion} ({Math.Round(bestMs)} ms) — applies on next launch");
+            }
+            else Status("no reachable endpoint found");
+            if (tab.Internal == "settings") LoadInternal(tab, "settings");
+        }
+        private static (string?, int) ParseHostPort(string proxy)
+        {
+            try { var u = new Uri(proxy.Contains("://") ? proxy : "tcp://" + proxy); return (u.Host, u.Port > 0 ? u.Port : 1080); }
+            catch { return (null, 0); }
+        }
+        private static async Task<double> ProbeAsync(string host, int port)
+        {
+            try
+            {
+                using var c = new System.Net.Sockets.TcpClient();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var t = c.ConnectAsync(host, port);
+                if (await Task.WhenAny(t, Task.Delay(1500)) != t) return -1;
+                await t; sw.Stop(); return sw.Elapsed.TotalMilliseconds;
+            }
+            catch { return -1; }
         }
 
         private void OpenFolder(string path)

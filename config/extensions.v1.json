@@ -1,0 +1,6 @@
+{
+  "schema": "recognition.extensions.v1",
+  "enabled": false,
+  "load": [],
+  "notes": "Governed Chromium extension allowlist. Set enabled=true and add absolute (or repo-relative) paths to UNPACKED extension folders in 'load'. Only allowlisted extensions are loaded (WebView2 AddBrowserExtensionAsync). Example: \"C:/ext/ublock\" or \"extensions/my-ext\"."
+}
