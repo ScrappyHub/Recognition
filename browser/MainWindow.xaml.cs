@@ -127,7 +127,7 @@ document.addEventListener('keydown',function(e){
                 var userData = Path.Combine(_repoRoot, "runtime", "browser_profile");
                 Directory.CreateDirectory(userData);
 
-                _history = new GovernedHistory(Path.Combine(_repoRoot, "runtime", "history.v1.ndjson"));
+                _history = new GovernedHistory(Path.Combine(_repoRoot, "runtime", "history.v1.enc"), Path.Combine(_repoRoot, "runtime", "history.v1.ndjson"));
                 _history.Load();
                 LoadBookmarks();
                 LoadDownloads();
@@ -574,26 +574,27 @@ document.addEventListener('keydown',function(e){
         private void LoadBookmarks()
         {
             _bookmarks.Clear();
-            var path = BookmarksPath();
-            if (!File.Exists(path)) return;
-            foreach (var line in File.ReadAllLines(path))
+            var legacy = Path.Combine(_repoRoot, "runtime", "bookmarks.v1.ndjson");
+            var text = ReadSecure(BookmarksPath());
+            bool migrated = false;
+            if (text.Length == 0 && File.Exists(legacy)) { text = File.ReadAllText(legacy); migrated = true; }
+            foreach (var line in text.Split('\n'))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 try { using var d = JsonDocument.Parse(line); var r = d.RootElement;
                       _bookmarks.Add(new Bookmark { Url = Get(r, "url"), Title = Get(r, "title"), Ts = Get(r, "ts_utc") }); }
                 catch { }
             }
+            if (migrated) { SaveBookmarks(); try { File.Delete(legacy); } catch { } }   // encrypt-in-place, drop plaintext
         }
-        private string BookmarksPath() => Path.Combine(_repoRoot, "runtime", "bookmarks.v1.ndjson");
+        private string BookmarksPath() => Path.Combine(_repoRoot, "runtime", "bookmarks.v1.enc");
         private void SaveBookmarks()
         {
             var sb = new StringBuilder();
             foreach (var b in _bookmarks)
                 sb.Append("{" + J("schema") + ":" + J("recognition.bookmark.v1") + "," + J("ts_utc") + ":" + J(b.Ts) + "," +
                           J("url") + ":" + J(b.Url) + "," + J("title") + ":" + J(b.Title) + "}\n");
-            var path = BookmarksPath();
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
+            WriteSecure(BookmarksPath(), sb.ToString());
         }
         private bool IsBookmarked(string url) => _bookmarks.Any(b => b.Url == url);
         private void Star_Click(object sender, RoutedEventArgs e) => ToggleBookmark();
@@ -880,9 +881,17 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                       (_blockingEnabled ? "ON" : "OFF") + "</a></div></div>");
             sb.Append("<div class='row'><div><div class='t'>Blocked this session</div><div class='u'>Across all tabs since launch.</div></div>" +
                       "<div class='ts'><span class='big'>" + _blockedSession + "</span></div></div>");
+            sb.Append("<div class='row'><div><div class='t'>Local data encryption</div>" +
+                      "<div class='u'>History, bookmarks &amp; downloads are encrypted at rest (Windows DPAPI, per-user) &mdash; ciphertext on disk, bound to your account.</div></div>" +
+                      "<div class='ts'><span class='pill'>&#128274; at rest</span></div></div>");
             sb.Append("<div style='margin:8px 0 20px'><span class='pill'>&#128737; Blocking</span><span class='pill'>HTTPS-first</span>" +
                       "<span class='pill'>No password autosave</span><span class='pill'>No general autofill</span>" +
-                      "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span></div>");
+                      "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span><span class='pill'>Encrypted at rest</span></div>");
+
+            sb.Append("<h1 style='font-size:16px'>Network (&sect;5.3 / &sect;29)</h1>");
+            sb.Append("<div class='kv'><div class='k'>VPN / tunnel</div><div class='v'>not connected (declared) &mdash; Recognition ships no built-in VPN; state is declared, never hidden</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Egress policy</div><div class='v'>canonical &mdash; HTTPS-first, tracker/ad hosts blocked, no telemetry or beacons; all requests are user-initiated</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Blocked this session</div><div class='v'>" + _blockedSession + " tracker/ad requests refused at the network layer</div></div>");
 
             sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
             var (sidState, sidId) = SoftwareIdState();
@@ -964,38 +973,42 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 var op = e.DownloadOperation;
                 var rec = new DownloadRec { Url = op.Uri, Path = op.ResultFilePath, State = op.State.ToString(), Ts = Iso(DateTime.UtcNow) };
                 _downloads.Add(rec);
-                AppendDownload(rec);
+                SaveDownloads();
                 Status("download started: " + System.IO.Path.GetFileName(rec.Path));
                 op.StateChanged += (o, __) => Dispatcher.Invoke(() =>
                 {
-                    rec.State = op.State.ToString(); rec.Path = op.ResultFilePath; AppendDownload(rec);
+                    rec.State = op.State.ToString(); rec.Path = op.ResultFilePath; SaveDownloads();
                     var a = Active; if (a != null && a.Internal == "downloads") LoadInternal(a, "downloads");
                 });
             }
             catch (Exception ex) { Status("download error: " + ex.Message); }
         }
 
+        private string DownloadsPath() => Path.Combine(_repoRoot, "runtime", "downloads.v1.enc");
         private void LoadDownloads()
         {
             _downloads.Clear();
-            var path = Path.Combine(_repoRoot, "runtime", "downloads.v1.ndjson");
-            if (!File.Exists(path)) return;
-            foreach (var line in File.ReadAllLines(path))
+            var legacy = Path.Combine(_repoRoot, "runtime", "downloads.v1.ndjson");
+            var text = ReadSecure(DownloadsPath());
+            bool migrated = false;
+            if (text.Length == 0 && File.Exists(legacy)) { text = File.ReadAllText(legacy); migrated = true; }
+            foreach (var line in text.Split('\n'))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 try { using var d = JsonDocument.Parse(line); var r = d.RootElement;
                       _downloads.Add(new DownloadRec { Url = Get(r, "url"), Path = Get(r, "path"), State = Get(r, "state"), Ts = Get(r, "ts_utc") }); }
                 catch { }
             }
+            if (migrated) { SaveDownloads(); try { File.Delete(legacy); } catch { } }
         }
 
-        private void AppendDownload(DownloadRec r)
+        private void SaveDownloads()
         {
-            var path = Path.Combine(_repoRoot, "runtime", "downloads.v1.ndjson");
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var line = "{" + J("schema") + ":" + J("recognition.download.v1") + "," + J("ts_utc") + ":" + J(r.Ts) + "," +
-                       J("url") + ":" + J(r.Url) + "," + J("path") + ":" + J(r.Path) + "," + J("state") + ":" + J(r.State) + "}\n";
-            File.AppendAllText(path, line, new UTF8Encoding(false));
+            var sb = new StringBuilder();
+            foreach (var r in _downloads)
+                sb.Append("{" + J("schema") + ":" + J("recognition.download.v1") + "," + J("ts_utc") + ":" + J(r.Ts) + "," +
+                          J("url") + ":" + J(r.Url) + "," + J("path") + ":" + J(r.Path) + "," + J("state") + ":" + J(r.State) + "}\n");
+            WriteSecure(DownloadsPath(), sb.ToString());
         }
 
         private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -1220,7 +1233,10 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 
                 WriteLf(Path.Combine(dir, "vpn_state.json"),
                     "{" + J("schema") + ":" + J("recognition.vpn_state.v1") + "," + J("connected") + ":false," +
-                          J("provider") + ":null," + J("exit_region") + ":null," + J("since_utc") + ":null," + J("policy") + ":" + J("canonical") + "}");
+                          J("provider") + ":null," + J("exit_region") + ":null," + J("since_utc") + ":null," + J("policy") + ":" + J("canonical") + "," +
+                          J("https_first") + ":true," + J("telemetry") + ":false," +
+                          J("tracker_blocking") + ":" + (_blockingEnabled ? "true" : "false") + "," +
+                          J("blocked_session") + ":" + _blockedSession + "}");
 
                 var script = Path.Combine(_repoRoot, "scripts", "recognition_export_session_packet_v1.ps1");
                 var psi = new ProcessStartInfo("powershell.exe",
@@ -1283,6 +1299,25 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (!text.EndsWith("\n")) text += "\n";
             File.WriteAllText(path, text, new UTF8Encoding(false));
         }
+
+        // ---- at-rest encryption: Windows DPAPI, per-user (§23/§25/§26) -----------
+        // History/bookmarks/downloads are ciphertext on disk, bound to the Windows
+        // user account; the blob is useless on another account or machine. No passphrase.
+        private static readonly UTF8Encoding EncNoBom = new(false);
+        private static void WriteSecure(string path, string text)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var blob = ProtectedData.Protect(EncNoBom.GetBytes(text ?? ""), null, DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(path, blob);
+        }
+        private static string ReadSecure(string path)
+        {
+            if (!File.Exists(path)) return "";
+            var bytes = File.ReadAllBytes(path);
+            try { return EncNoBom.GetString(ProtectedData.Unprotect(bytes, null, DataProtectionScope.CurrentUser)); }
+            catch { try { return EncNoBom.GetString(bytes); } catch { return ""; } }   // legacy plaintext (pre-encryption)
+        }
+
         private void Status(string s) => StatusText.Text = s;
 
         // ---- governed, append-only, hash-chained history (§24) ------------------
@@ -1291,19 +1326,24 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
         {
             public sealed class Item { public int Seq; public string Ts = ""; public string Url = ""; public string Title = ""; }
             public readonly List<Item> Items = new();
+            private readonly List<string> _lines = new();     // exact ndjson lines (with hashes)
             private readonly string _path;
+            private readonly string _legacy;
             private string _head = new string('0', 64);
             private static readonly UTF8Encoding Enc = new(false);
 
-            public GovernedHistory(string path) { _path = path; }
+            public GovernedHistory(string path, string legacy) { _path = path; _legacy = legacy; }
 
             public void Load()
             {
-                Items.Clear(); _head = new string('0', 64);
-                if (!File.Exists(_path)) return;
-                foreach (var line in File.ReadAllLines(_path))
+                Items.Clear(); _lines.Clear(); _head = new string('0', 64);
+                var text = ReadSecure(_path);
+                bool migrated = false;
+                if (text.Length == 0 && File.Exists(_legacy)) { text = File.ReadAllText(_legacy); migrated = true; }
+                foreach (var raw in text.Split('\n'))
                 {
-                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var line = raw.Trim();
+                    if (line.Length == 0) continue;
                     try
                     {
                         using var doc = JsonDocument.Parse(line);
@@ -1313,10 +1353,12 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                             Seq = r.TryGetProperty("seq", out var sq) ? sq.GetInt32() : Items.Count + 1,
                             Ts = GetS(r, "ts_utc"), Url = GetS(r, "url"), Title = GetS(r, "title")
                         });
+                        _lines.Add(line);
                         if (r.TryGetProperty("hash", out var hv)) _head = hv.GetString() ?? _head;
                     }
                     catch { }
                 }
+                if (migrated) { Save(); try { File.Delete(_legacy); } catch { } }   // encrypt-in-place, drop plaintext
             }
 
             public void Append(string url, string title)
@@ -1327,21 +1369,25 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 var body = "{" + JJ("seq") + ":" + seq + "," + JJ("ts_utc") + ":" + JJ(ts) + "," +
                            JJ("url") + ":" + JJ(url) + "," + JJ("title") + ":" + JJ(title ?? "") + "," + JJ("prev_hash") + ":" + JJ(_head) + "}";
                 var hash = HashHex(body);
-                var line = body.Substring(0, body.Length - 1) + "," + JJ("hash") + ":" + JJ(hash) + "}\n";
-                try
-                {
-                    Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-                    File.AppendAllText(_path, line, Enc);
-                    _head = hash;
-                    Items.Add(new Item { Seq = seq, Ts = ts, Url = url, Title = title ?? "" });
-                }
-                catch { }
+                var line = body.Substring(0, body.Length - 1) + "," + JJ("hash") + ":" + JJ(hash) + "}";
+                _head = hash;
+                Items.Add(new Item { Seq = seq, Ts = ts, Url = url, Title = title ?? "" });
+                _lines.Add(line);
+                Save();   // rewrite the whole DPAPI-encrypted file (chain preserved in-memory)
+            }
+
+            private void Save()
+            {
+                var sb = new StringBuilder();
+                foreach (var l in _lines) { sb.Append(l); sb.Append('\n'); }
+                WriteSecure(_path, sb.ToString());
             }
 
             public void Clear()
             {
                 try { if (File.Exists(_path)) File.Delete(_path); } catch { }
-                Items.Clear(); _head = new string('0', 64);
+                try { if (File.Exists(_legacy)) File.Delete(_legacy); } catch { }
+                Items.Clear(); _lines.Clear(); _head = new string('0', 64);
             }
 
             private static string HashHex(string s)

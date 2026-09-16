@@ -45,11 +45,11 @@ The handoff has no separate DoD; §31's ✓ pattern **is** the definition, gover
 | Recovery Engine (§21) | PARTIAL (vault/seal restore primitives only) | — | — |
 | Evidence / Seal / Freeze (§13,§16,§17) | PARTIAL (over ledger, not live browser) | `recognition_seal_verify_v1` | `RECOGNITION_..._SEAL_VERIFY_V1_OK` |
 | Encrypted Cookies (§23) | NOT BUILT | — | — |
-| Encrypted Downloads (§25) | PARTIAL (browser tracks downloads to `runtime\downloads.v1.ndjson` + a Downloads page; not yet encrypted-at-rest per §25) | — | — |
-| Password Engine (§26) | NOT BUILT | — | — |
-| Bookmarks | PARTIAL (browser bookmarks store `runtime\bookmarks.v1.ndjson` + star toggle + Bookmarks page + omnibox; not yet vault-sealed/receipted) | — | — |
+| Encrypted Downloads (§25) | DONE (browser-level): downloads tracked and **encrypted at rest** (`runtime\downloads.v1.enc`, Windows DPAPI per-user) + Downloads page | (in-browser) | — |
+| Password Engine (§26) | NOT BUILT (no password autosave by design; at-rest primitive is DPAPI as used by other stores) | — | — |
+| Bookmarks | DONE (browser-level): bookmarks **encrypted at rest** (`runtime\bookmarks.v1.enc`, DPAPI) + star toggle + Bookmarks page + omnibox | (in-browser) | — |
 | Identity Vault / Layer 0 (§9,§27) | NOT BUILT (identity = strings only) | — | — |
-| Network Policy Engine (§29) | PARTIAL (browser enforces request-level tracker/ad blocking against a governed host blocklist `config\blocklist.v1.txt` + built-in rules; per-site shield counter; HTTPS-first upgrade. No full per-origin policy engine yet) | (in-browser) | — |
+| Network Policy Engine (§29, §5.3) | PARTIAL (request-level tracker/ad blocking vs governed blocklist + built-in rules, per-site shield, HTTPS-first; declared network/VPN state surfaced in Settings and exported in the governed packet — no hidden activity. No built-in VPN engine (declared-only) and no full per-origin policy engine yet) | (in-browser) | — |
 | Certificate Manager | NOT BUILT | — | — |
 | Sync Engine (§28) | NOT BUILT | — | — |
 | Package Builder / Installer / Updater / Release / License | NOT BUILT | — | — |
