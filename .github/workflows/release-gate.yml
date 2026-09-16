@@ -29,5 +29,9 @@ jobs:
         run: |
           $o = & pwsh -File scripts/RUN_RELEASE_GATE_V1.ps1 -RepoRoot . -RequireBrowserBuild *>&1 | Out-String
           Write-Host $o
-          if ($o -notmatch 'RECOGNITION_RELEASE_GATE_V1_OK') { throw 'RELEASE GATE NOT GREEN' }
+          if ($o -notmatch 'RECOGNITION_RELEASE_GATE_V1_OK') {
+            Write-Host '================ prove-all per-component detail (diagnostic) ================'
+            & pwsh -File scripts/recognition_prove_all_v1.ps1 -RepoRoot .
+            throw 'RELEASE GATE NOT GREEN'
+          }
           Write-Host 'RECOGNITION_RELEASE_GATE_V1_OK confirmed by CI' -ForegroundColor Green
