@@ -77,7 +77,9 @@ $trust = Join-Path (Join-Path (Join-Path $RepoRoot "proofs") "trust") "allowed_s
 if(-not (Test-Path -LiteralPath $trust -PathType Leaf)){ Blocked "trust root missing (proofs/trust/allowed_signers)" }
 if(-not (Test-Path -LiteralPath $sigPath -PathType Leaf)){ Blocked "signature missing (proofs/software/software_id.sig)" }
 
-$ssh = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source
+$ssh = $null
+foreach($cand in @((Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'), (Join-Path ${env:ProgramFiles} 'Git\usr\bin\ssh-keygen.exe'))){ if($cand -and (Test-Path -LiteralPath $cand)){ $ssh = $cand; break } }
+if(-not $ssh){ $ssh = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source }
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $ssh
 foreach($a in @("-Y","verify","-f",$trust,"-I",$principal,"-n",$namespace,"-s",$sigPath)){ [void]$psi.ArgumentList.Add($a) }

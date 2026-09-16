@@ -80,7 +80,11 @@ if([string]$manifest.schema -ne "recognition.runtime.bridge.attestation.v1"){
 }
 
 # --- signature against the PINNED trust root only ------------------------------
-$SshKeygen = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source
+# Resolve the REAL ssh-keygen.exe (avoid the Windows App-Execution-Alias stub, which
+# Process.Start cannot launch with redirected I/O).
+$SshKeygen = $null
+foreach($cand in @((Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'), (Join-Path ${env:ProgramFiles} 'Git\usr\bin\ssh-keygen.exe'))){ if($cand -and (Test-Path -LiteralPath $cand)){ $SshKeygen = $cand; break } }
+if(-not $SshKeygen){ $SshKeygen = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $SshKeygen

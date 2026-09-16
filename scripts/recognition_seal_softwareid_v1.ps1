@@ -63,7 +63,9 @@ function ResolveBinary([string]$RepoRoot,[string]$BinaryPath){
   return ""
 }
 
-$ssh = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source
+$ssh = $null
+foreach($cand in @((Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'), (Join-Path ${env:ProgramFiles} 'Git\usr\bin\ssh-keygen.exe'))){ if($cand -and (Test-Path -LiteralPath $cand)){ $ssh = $cand; break } }
+if(-not $ssh){ $ssh = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source }
 
 $bin = ResolveBinary $RepoRoot $BinaryPath
 if(-not $bin){ Die "no browser binary found to seal (build the browser first, or pass -BinaryPath)" }

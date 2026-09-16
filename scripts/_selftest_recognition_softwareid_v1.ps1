@@ -10,7 +10,9 @@ $ErrorActionPreference = "Stop"
 $scripts = $PSScriptRoot
 $seal    = Join-Path $scripts "recognition_seal_softwareid_v1.ps1"
 $verify  = Join-Path $scripts "recognition_verify_softwareid_v1.ps1"
-$ssh     = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source
+$ssh = $null
+foreach($cand in @((Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'), (Join-Path ${env:ProgramFiles} 'Git\usr\bin\ssh-keygen.exe'))){ if($cand -and (Test-Path -LiteralPath $cand)){ $ssh = $cand; break } }
+if(-not $ssh){ $ssh = (Get-Command ssh-keygen -CommandType Application -ErrorAction Stop).Source }
 
 $fail = 0
 function Assert([bool]$cond,[string]$msg){
