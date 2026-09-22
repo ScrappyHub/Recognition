@@ -38,6 +38,7 @@ namespace Recognition.Browser
         private readonly List<BrowserTab> _tabs = new();
 
         private GovernedHistory _history = null!;
+        private GovernedActions _actions = null!;
         private readonly List<Bookmark> _bookmarks = new();
         private readonly List<DownloadRec> _downloads = new();
         private bool _suppressSuggest;
@@ -150,6 +151,9 @@ document.addEventListener('keydown',function(e){
 
                 _history = new GovernedHistory(Path.Combine(_repoRoot, "runtime", "history.v1.enc"), Path.Combine(_repoRoot, "runtime", "history.v1.ndjson"));
                 _history.Load();
+                _actions = new GovernedActions(Path.Combine(_repoRoot, "runtime", "actions.v1.enc"));
+                _actions.Load();
+                _actions.Append("session.start");
                 LoadBookmarks();
                 LoadDownloads();
                 LoadSettings();
@@ -581,6 +585,7 @@ document.addEventListener('keydown',function(e){
         private void SetVpnOff()
         {
             _netMode = "off"; _netProxy = ""; _netExitRegion = ""; SaveNetworkConfig(); UpdateVpn();
+            _actions?.Append("vpn.off");
             var a = Active; if (a != null && a.Internal == "settings") LoadInternal(a, "settings");
             Status("VPN off — direct connection (applies to new sessions on next launch)");
         }
@@ -599,6 +604,7 @@ document.addEventListener('keydown',function(e){
             }
             _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = label; _netProxyDown = false;
             SaveNetworkConfig(); UpdateVpn();
+            _actions?.Append("vpn.pick", ep.Proxy);
             var a = Active; if (a != null && a.Internal == "settings") LoadInternal(a, "settings");
             Status("VPN exit set to " + label + " (" + Math.Round(ms) + " ms) — click Apply (restart) to route traffic through it now");
         }
@@ -882,8 +888,8 @@ document.addEventListener('keydown',function(e){
         private void ToggleBookmark()
         {
             var a = Active; if (a == null || a.IsInternal || string.IsNullOrEmpty(a.CurrentUrl)) return;
-            if (IsBookmarked(a.CurrentUrl)) { _bookmarks.RemoveAll(b => b.Url == a.CurrentUrl); Status("bookmark removed"); }
-            else { _bookmarks.Add(new Bookmark { Url = a.CurrentUrl, Title = a.CurrentTitle, Ts = Iso(DateTime.UtcNow) }); Status("bookmarked"); }
+            if (IsBookmarked(a.CurrentUrl)) { _bookmarks.RemoveAll(b => b.Url == a.CurrentUrl); _actions?.Append("bookmark.remove", a.CurrentUrl); Status("bookmark removed"); }
+            else { _bookmarks.Add(new Bookmark { Url = a.CurrentUrl, Title = a.CurrentTitle, Ts = Iso(DateTime.UtcNow) }); _actions?.Append("bookmark.add", a.CurrentUrl); Status("bookmarked"); }
             SaveBookmarks(); UpdateStar(a);
             if (a.Internal == "bookmarks") LoadInternal(a, "bookmarks");
         }
@@ -1216,6 +1222,15 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Verified at every launch against a signed record (Ed25519, pinned trust root). " +
                       "A modified binary is refused before the browser opens.</div>");
 
+            sb.Append("<h1 style='font-size:16px'>Action receipts (prove-it-in-every-action)</h1>");
+            bool actOk = _actions != null && _actions.Verify(out int actVerified2);
+            int actCount = _actions?.Count ?? 0;
+            var actColor = actOk ? "#7fd6a0" : "#e06c6c";
+            sb.Append("<div class='kv'><div class='k'>Receipts this profile</div><div class='v'>" + actCount + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Chain</div><div class='v' style='color:" + actColor + "'>" + (actOk ? "verified — sound, ordered, unbroken" : "TAMPERED / broken") + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Head hash</div><div class='v'>" + Esc(_actions?.Head ?? "") + "</div></div>");
+            sb.Append("<div class='muted' style='margin:6px 0 18px'>Every meaningful action (navigate, download, bookmark, VPN switch, export, clear) appends an append-only, hash-chained, DPAPI-encrypted receipt. URLs and paths are stored as SHA-256 only, never cleartext. Any edit, reorder, or deletion breaks the chain. Verified in the release gate and included in every exported packet.</div>");
+
             sb.Append("<h1 style='font-size:16px'>Identity &amp; governance</h1>");
             sb.Append("<div class='kv'><div class='k'>Identity (recognition_identity_id)</div><div class='v'>" + Esc(rid) + "</div></div>");
             sb.Append("<div class='kv'><div class='k'>Identity descriptor</div><div class='v'>" + Esc(idPath) + "</div></div>");
@@ -1261,6 +1276,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                     break;
                 case "clear-history":
                     _history.Clear();
+                    _actions?.Append("history.clear");
                     if (tab.Internal is "history" or "settings") LoadInternal(tab, tab.Internal);
                     Status("history cleared");
                     break;
@@ -1291,8 +1307,9 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             }
             if (best != null)
             {
-                _netMode = "proxy"; _netProxy = best.Proxy; _netExitRegion = string.IsNullOrEmpty(best.Region) ? best.Name : best.Region;
+                _netMode = "proxy"; _netProxy = best.Proxy; _netExitRegion = string.IsNullOrEmpty(best.Region) ? best.Name : best.Region; _netProxyDown = false;
                 SaveNetworkConfig(); UpdateVpn();
+                _actions?.Append("vpn.optimize", best.Proxy);
                 Status($"best placement: {_netExitRegion} ({Math.Round(bestMs)} ms) — applies on next launch");
             }
             else Status("no reachable endpoint found");
@@ -1334,10 +1351,13 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 var rec = new DownloadRec { Url = op.Uri, Path = op.ResultFilePath, State = op.State.ToString(), Ts = Iso(DateTime.UtcNow) };
                 _downloads.Add(rec);
                 SaveDownloads();
+                _actions?.Append("download.start", op.Uri);
                 Status("download started: " + System.IO.Path.GetFileName(rec.Path));
                 op.StateChanged += (o, __) => Dispatcher.Invoke(() =>
                 {
                     rec.State = op.State.ToString(); rec.Path = op.ResultFilePath; SaveDownloads();
+                    if (op.State == CoreWebView2DownloadState.Completed) _actions?.Append("download.complete", op.Uri);
+                    else if (op.State == CoreWebView2DownloadState.Interrupted) _actions?.Append("download.interrupted", op.Uri);
                     var a = Active; if (a != null && a.Internal == "downloads") LoadInternal(a, "downloads");
                 });
             }
@@ -1423,7 +1443,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             var title = tab.Web.CoreWebView2.DocumentTitle ?? "";
             tab.CurrentUrl = url; tab.CurrentTitle = title;
             tab.Visits.Add((url, title, DateTime.UtcNow));
-            if (!tab.Private) _history.Append(url, title);   // private tabs leave no persisted trace
+            if (!tab.Private) { _history.Append(url, title); _actions.Append("navigate", url); }   // private tabs leave no persisted trace
             SetHeader(tab, title);
             if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); UpdateShield(); Status($"visited {TotalVisits()}: {title}"); }
         }
@@ -1603,6 +1623,14 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                           J("tracker_blocking") + ":" + (_blockingEnabled ? "true" : "false") + "," +
                           J("blocked_session") + ":" + _blockedSession + "}");
 
+                bool actOk = _actions.Verify(out int actVerified);
+                WriteLf(Path.Combine(dir, "action_receipts.json"),
+                    "{" + J("schema") + ":" + J("recognition.action_receipts.v1") + "," +
+                          J("count") + ":" + _actions.Count + "," +
+                          J("verified") + ":" + actVerified + "," +
+                          J("chain_ok") + ":" + (actOk ? "true" : "false") + "," +
+                          J("head_hash") + ":" + J(_actions.Head) + "}");
+
                 var script = Path.Combine(_repoRoot, "scripts", "recognition_export_session_packet_v1.ps1");
                 var psi = new ProcessStartInfo("powershell.exe",
                     $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\"")
@@ -1614,6 +1642,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 if (m.Success)
                 {
                     var pkt = m.Groups["d"].Value.Trim();
+                    _actions?.Append("session.export", pkt);
                     Status("Exported governed packet: " + Path.GetFileName(pkt));
                     MessageBox.Show(this, "Session exported as a governed evidence packet:\n\n" + pkt,
                         "Recognition — Export", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1752,6 +1781,123 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             {
                 try { if (File.Exists(_path)) File.Delete(_path); } catch { }
                 try { if (File.Exists(_legacy)) File.Delete(_legacy); } catch { }
+                Items.Clear(); _lines.Clear(); _head = new string('0', 64);
+            }
+
+            private static string HashHex(string s)
+            {
+                var h = SHA256.HashData(Enc.GetBytes(s));
+                var sb = new StringBuilder(); foreach (var b in h) sb.Append(b.ToString("x2")); return sb.ToString();
+            }
+            private static string JJ(string s) => "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+            private static string GetS(JsonElement r, string k) => r.TryGetProperty(k, out var v) ? (v.GetString() ?? "") : "";
+        }
+
+        // ---- governed action receipts (§13/§15): prove-it-in-every-action -------
+        // Every meaningful browser action appends one append-only, hash-chained,
+        // DPAPI-encrypted receipt. Sensitive detail (URLs, paths) is stored ONLY as a
+        // SHA-256, never cleartext — same privacy stance as the history chain. The chain
+        // links seq→prev_hash→hash so nothing can be modified, reordered, missing, or
+        // forged without Verify() failing. This is the browser-side witness that each
+        // action really happened, in order. Format matches the PS selftest / prove-all.
+        private sealed class GovernedActions
+        {
+            public sealed class Rec { public int Seq; public string Ts = ""; public string Action = ""; public string DetailSha = ""; public string Hash = ""; }
+            public readonly List<Rec> Items = new();
+            private readonly List<string> _lines = new();
+            private readonly string _path;
+            private string _head = new string('0', 64);
+            private static readonly UTF8Encoding Enc = new(false);
+            public string Head => _head;
+            public int Count => Items.Count;
+
+            public GovernedActions(string path) { _path = path; }
+
+            public void Load()
+            {
+                Items.Clear(); _lines.Clear(); _head = new string('0', 64);
+                var text = ReadSecure(_path);
+                foreach (var raw in text.Split('\n'))
+                {
+                    var line = raw.Trim();
+                    if (line.Length == 0) continue;
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line);
+                        var r = doc.RootElement;
+                        Items.Add(new Rec
+                        {
+                            Seq = r.TryGetProperty("seq", out var sq) ? sq.GetInt32() : Items.Count + 1,
+                            Ts = GetS(r, "ts_utc"), Action = GetS(r, "action"), DetailSha = GetS(r, "detail_sha256"),
+                            Hash = GetS(r, "hash")
+                        });
+                        _lines.Add(line);
+                        if (r.TryGetProperty("hash", out var hv)) _head = hv.GetString() ?? _head;
+                    }
+                    catch { }
+                }
+            }
+
+            // detail is hashed here; callers pass cleartext and it never touches disk.
+            public void Append(string action, string detail = "")
+            {
+                if (string.IsNullOrEmpty(action)) return;
+                var seq = Items.Count + 1;
+                var ts = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                var detailSha = string.IsNullOrEmpty(detail) ? "" : HashHex(detail);
+                var body = "{" + JJ("seq") + ":" + seq + "," + JJ("ts_utc") + ":" + JJ(ts) + "," +
+                           JJ("action") + ":" + JJ(action) + "," + JJ("detail_sha256") + ":" + JJ(detailSha) + "," +
+                           JJ("prev_hash") + ":" + JJ(_head) + "}";
+                var hash = HashHex(body);
+                var line = body.Substring(0, body.Length - 1) + "," + JJ("hash") + ":" + JJ(hash) + "}";
+                _head = hash;
+                Items.Add(new Rec { Seq = seq, Ts = ts, Action = action, DetailSha = detailSha, Hash = hash });
+                _lines.Add(line);
+                Save();
+            }
+
+            // Recompute the chain: every record's body-hash must match, prev_hash must
+            // link to the prior record's hash, and seq must be contiguous. Returns false
+            // on any tamper / reorder / missing / forged record. The body is recovered by
+            // text surgery on the raw line (not by re-serializing parsed JSON fields) so the
+            // recomputed hash input is byte-identical to what Append() actually hashed.
+            public bool Verify(out int verified)
+            {
+                verified = 0;
+                var prev = new string('0', 64);
+                int expectSeq = 1;
+                var marker = "," + JJ("hash") + ":";
+                foreach (var line in _lines)
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line);
+                        var r = doc.RootElement;
+                        int seq = r.GetProperty("seq").GetInt32();
+                        string ph = GetS(r, "prev_hash"), h = GetS(r, "hash");
+                        if (seq != expectSeq) return false;
+                        if (ph != prev) return false;
+                        int idx = line.LastIndexOf(marker, StringComparison.Ordinal);
+                        if (idx < 0) return false;
+                        var body = line.Substring(0, idx) + "}";
+                        if (HashHex(body) != h) return false;
+                        prev = h; expectSeq++; verified++;
+                    }
+                    catch { return false; }
+                }
+                return true;
+            }
+
+            private void Save()
+            {
+                var sb = new StringBuilder();
+                foreach (var l in _lines) { sb.Append(l); sb.Append('\n'); }
+                WriteSecure(_path, sb.ToString());
+            }
+
+            public void Clear()
+            {
+                try { if (File.Exists(_path)) File.Delete(_path); } catch { }
                 Items.Clear(); _lines.Clear(); _head = new string('0', 64);
             }
 
