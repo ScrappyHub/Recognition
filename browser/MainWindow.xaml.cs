@@ -60,6 +60,7 @@ namespace Recognition.Browser
         private string _netExitRegion = "";
         private string _netExitCheckUrl = "";
         private bool _netAutoOptimize;
+        private bool _netProxyDown;   // configured exit is unreachable this session (run direct, warn)
         private sealed class NetEndpoint { public string Name = ""; public string Region = ""; public string Proxy = ""; }
         private readonly List<NetEndpoint> _netEndpoints = new();
 
@@ -156,6 +157,17 @@ document.addEventListener('keydown',function(e){
                 LoadNetworkConfig();
                 LoadExtensionsConfig();
 
+                // Reachability check: if the configured exit is a dead/placeholder host, the engine
+                // would fail-closed and load nothing. Probe first; if it is unreachable, flag it so
+                // NetOpts() runs direct this session and the toolbar shows the warning.
+                if (_netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy))
+                {
+                    Status("checking VPN exit reachability…");
+                    var (h, pt) = ParseHostPort(_netProxy);
+                    _netProxyDown = h == null || await ProbeAsync(h, pt) < 0;
+                    if (_netProxyDown) Status("VPN exit unreachable — running direct this session (see the 🌐 indicator)");
+                }
+
                 Status("initializing web engine…");
                 _env = await CoreWebView2Environment.CreateAsync(null, userData, NetOpts());
 
@@ -209,7 +221,9 @@ document.addEventListener('keydown',function(e){
             AddressBar.Focus();
             Status(_privateVpnOn
                 ? ("private tab — VPN on" + (string.IsNullOrEmpty(_privateVpnRegion) ? "" : " (" + _privateVpnRegion + ")") + ", nothing persisted")
-                : "private tab — nothing persisted (add a VPN endpoint in Settings to tunnel incognito)");
+                : (_netEndpoints.Count == 0 || (string.IsNullOrWhiteSpace(_netProxy) && _netEndpoints.Count == 0)
+                    ? "private tab — nothing persisted (add a VPN endpoint in Settings to tunnel incognito)"
+                    : "private tab — nothing persisted; VPN could not engage (exit unreachable — bring your exit online, e.g. run Tor for tor-local)"));
         }
 
         private async Task<CoreWebView2Environment> EnsurePrivateEnvAsync()
@@ -217,14 +231,16 @@ document.addEventListener('keydown',function(e){
             if (_privateEnv != null) return _privateEnv;
             _privateDir = Path.Combine(Path.GetTempPath(), "rb-private-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_privateDir);
-            _privateEnv = await CoreWebView2Environment.CreateAsync(null, _privateDir, PrivateEnvOpts());
+            _privateEnv = await CoreWebView2Environment.CreateAsync(null, _privateDir, await PrivateEnvOptsAsync());
             return _privateEnv;
         }
 
         // Incognito forces the VPN on: use the active proxy, else the first configured
-        // endpoint. The private env's proxy is fixed at creation, so this is a safe,
-        // no-leak default for private browsing whenever an endpoint exists.
-        private CoreWebView2EnvironmentOptions PrivateEnvOpts()
+        // endpoint. The private env's proxy is fixed at creation, so we probe the chosen
+        // exit first — a reachable exit engages the tunnel; an unreachable one would make
+        // the private window fail-closed (load nothing), so we fall back to direct and mark
+        // the tab so the user knows the tunnel could not engage rather than silently breaking.
+        private async Task<CoreWebView2EnvironmentOptions> PrivateEnvOptsAsync()
         {
             var o = new CoreWebView2EnvironmentOptions();
             string proxy = _netProxy, region = _netExitRegion;
@@ -235,10 +251,16 @@ document.addEventListener('keydown',function(e){
             }
             if (!string.IsNullOrWhiteSpace(proxy))
             {
-                o.AdditionalBrowserArguments = "--proxy-server=\"" + proxy + "\"";
-                _privateVpnOn = true; _privateVpnRegion = region ?? "";
+                var (h, pt) = ParseHostPort(proxy);
+                bool reachable = h != null && await ProbeAsync(h, pt) >= 0;
+                if (reachable)
+                {
+                    o.AdditionalBrowserArguments = "--proxy-server=\"" + proxy + "\"";
+                    _privateVpnOn = true; _privateVpnRegion = region ?? "";
+                    return o;
+                }
             }
-            else { _privateVpnOn = false; _privateVpnRegion = ""; }
+            _privateVpnOn = false; _privateVpnRegion = "";
             return o;
         }
 
@@ -501,13 +523,26 @@ document.addEventListener('keydown',function(e){
         // ---- VPN toolbar indicator ---------------------------------------------
         private void UpdateVpn()
         {
+            // Three states: ON (green, tunnel live), WARNING (amber, configured exit unreachable →
+            // running direct), OFF (grey, direct by choice).
+            bool warn = _netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy) && _netProxyDown;
             bool on = NetActive();
             var region = string.IsNullOrEmpty(_netExitRegion) ? "on" : _netExitRegion;
-            VpnBtn.Content = on ? ("\U0001F310 " + region) : "\U0001F310";
-            VpnBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0x6F, 0xCF, 0x97) : Color.FromRgb(0x8B, 0x90, 0x9A));
-            VpnBtn.ToolTip = on
-                ? ("VPN ON — " + _netMode + (string.IsNullOrEmpty(_netExitRegion) ? "" : " · " + _netExitRegion) + "  (click for settings)")
-                : "VPN OFF — click to configure";
+            if (warn)
+            {
+                VpnBtn.Content = "\U0001F310 !";
+                VpnBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xB4, 0x4C)); // amber
+                VpnBtn.ToolTip = "VPN exit unreachable (" + (_netExitRegion ?? "") + ") — running DIRECT this session. "
+                               + "Fix the exit host in Network settings, or pick another exit, then Apply (restart).";
+            }
+            else
+            {
+                VpnBtn.Content = on ? ("\U0001F310 " + region) : "\U0001F310";
+                VpnBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0x6F, 0xCF, 0x97) : Color.FromRgb(0x8B, 0x90, 0x9A));
+                VpnBtn.ToolTip = on
+                    ? ("VPN ON — " + _netMode + (string.IsNullOrEmpty(_netExitRegion) ? "" : " · " + _netExitRegion) + "  (click for settings)")
+                    : "VPN OFF — click to configure";
+            }
         }
         private void Vpn_Click(object sender, RoutedEventArgs e)
         {
@@ -523,7 +558,7 @@ document.addEventListener('keydown',function(e){
                     var label = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
                     var mi = new MenuItem { Header = label, IsChecked = (_netMode == "proxy" && _netProxy == ep.Proxy) };
                     var epc = ep;
-                    mi.Click += (_, __) => SetVpnEndpoint(epc);
+                    mi.Click += (_, __) => { _ = SetVpnEndpoint(epc); };
                     cm.Items.Add(mi);
                 }
                 cm.Items.Add(new Separator());
@@ -532,6 +567,9 @@ document.addEventListener('keydown',function(e){
                 cm.Items.Add(opt);
             }
             cm.Items.Add(new Separator());
+            var apply = new MenuItem { Header = "Apply changes now (restart)" };
+            apply.Click += (_, __) => RestartToApply();
+            cm.Items.Add(apply);
             var settings = new MenuItem { Header = "Network settings…" };
             settings.Click += (_, __) => OpenInternalInActiveTab("settings");
             cm.Items.Add(settings);
@@ -546,12 +584,41 @@ document.addEventListener('keydown',function(e){
             var a = Active; if (a != null && a.Internal == "settings") LoadInternal(a, "settings");
             Status("VPN off — direct connection (applies to new sessions on next launch)");
         }
-        private void SetVpnEndpoint(NetEndpoint ep)
+        private async Task SetVpnEndpoint(NetEndpoint ep)
         {
-            _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
+            var label = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
+            var (h, pt) = ParseHostPort(ep.Proxy);
+            if (h == null) { Status("VPN exit '" + label + "' has an invalid proxy address — not applied"); return; }
+            Status("checking " + label + " reachability…");
+            var ms = await ProbeAsync(h, pt);
+            if (ms < 0)
+            {
+                Status("VPN exit '" + label + "' is unreachable (" + ep.Proxy + ") — not applied. "
+                     + "Bring its exit online (your proxy/WireGuard, or Tor for tor-local) or fix the host in Network settings.");
+                return;
+            }
+            _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = label; _netProxyDown = false;
             SaveNetworkConfig(); UpdateVpn();
             var a = Active; if (a != null && a.Internal == "settings") LoadInternal(a, "settings");
-            Status("VPN exit set to " + _netExitRegion + " (applies on next launch)");
+            Status("VPN exit set to " + label + " (" + Math.Round(ms) + " ms) — click Apply (restart) to route traffic through it now");
+        }
+
+        // Live-apply a routing change: WebView2 fixes the engine proxy at startup, so we
+        // relaunch cleanly — a helper waits for THIS process to exit (releasing the
+        // profile), then starts a fresh instance which reads the new config.
+        private void RestartToApply()
+        {
+            try
+            {
+                var exe = Environment.ProcessPath;
+                if (string.IsNullOrEmpty(exe)) { Status("cannot locate the executable to restart"); return; }
+                var pid = Environment.ProcessId;
+                var args = "-NoProfile -WindowStyle Hidden -Command \"Wait-Process -Id " + pid +
+                           " -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 700; Start-Process '" + exe.Replace("'", "''") + "'\"";
+                Process.Start(new ProcessStartInfo("pwsh.exe", args) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+                Application.Current.Shutdown();
+            }
+            catch (Exception ex) { Status("restart failed: " + ex.Message); }
         }
 
         // ---- settings persistence ----------------------------------------------
@@ -631,11 +698,15 @@ document.addEventListener('keydown',function(e){
         {
             var o = new CoreWebView2EnvironmentOptions();
             o.AreBrowserExtensionsEnabled = _extEnabled;
-            if (_netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy))
+            // Only route through the proxy if it is reachable this session. A dead/placeholder
+            // exit would make the engine fail-closed (no page loads at all), so we fall back to
+            // a direct connection and surface a warning in the toolbar instead of breaking.
+            if (_netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy) && !_netProxyDown)
                 o.AdditionalBrowserArguments = "--proxy-server=\"" + _netProxy + "\"";
             return o;
         }
-        private bool NetActive() => _netMode != "off" && !(_netMode == "proxy" && string.IsNullOrWhiteSpace(_netProxy));
+        // VPN is genuinely carrying traffic only when configured proxy mode AND the exit is reachable.
+        private bool NetActive() => _netMode != "off" && _netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy) && !_netProxyDown;
 
         // ---- governed Chromium extensions (config/extensions.v1.json allowlist) --
         private void LoadExtensionsConfig()
@@ -1106,8 +1177,14 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                       "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span><span class='pill'>Encrypted at rest</span></div>");
 
             sb.Append("<h1 style='font-size:16px'>Network / VPN (&sect;5.3 / &sect;29)</h1>");
+            bool netWarn = _netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy) && _netProxyDown;
+            if (netWarn)
+                sb.Append("<div class='row' style='border:1px solid #E0B44C;background:#2a2410'><div><div class='t' style='color:#E0B44C'>&#9888; Configured exit unreachable &mdash; running DIRECT this session</div>" +
+                          "<div class='u'>The exit <code>" + Esc(_netProxy) + "</code> (" + Esc(_netExitRegion ?? "") + ") did not answer. Browsing still works, unproxied. " +
+                          "Bring that exit online (your proxy / WireGuard, or Tor for tor-local), pick another exit below, or set it Off.</div></div></div>");
             sb.Append("<div class='row'><div><div class='t'>Tunnel</div><div class='u'>" +
-                      (NetActive() ? ("ON &mdash; " + Esc(_netMode) + (string.IsNullOrEmpty(_netExitRegion) ? "" : " &middot; " + Esc(_netExitRegion))) : "OFF (direct connection)") +
+                      (NetActive() ? ("ON &mdash; " + Esc(_netMode) + (string.IsNullOrEmpty(_netExitRegion) ? "" : " &middot; " + Esc(_netExitRegion)))
+                                   : (netWarn ? "DIRECT (configured exit unreachable)" : "OFF (direct connection)")) +
                       "</div></div><div class='ts'><a class='btn" + (NetActive() ? " ghost" : "") + "' onclick=\"send('vpn-off')\">Off</a></div></div>");
             foreach (var ep in _netEndpoints)
             {
@@ -1121,7 +1198,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 sb.Append("<div style='margin:10px 0 6px'><a class='btn' onclick=\"send('vpn-optimize')\">Auto-optimize (best placement)</a></div>");
             else
                 sb.Append("<div class='muted'>Add exit endpoints to <code>config\\network.v1.json</code> (name / region / proxy, e.g. <code>socks5://host:1080</code>) to choose one or auto-optimize. Recognition runs no exit servers &mdash; bring your own (self-hosted, a provider proxy, WireGuard, or Tor).</div>");
-            sb.Append("<div class='muted' style='margin:6px 0 6px'>Routing changes apply on next launch (the engine proxy is set at startup). Egress: HTTPS-first, trackers/ads blocked, no telemetry &mdash; all requests user-initiated.</div>");
+            sb.Append("<div style='margin:8px 0 6px'><a class='btn' onclick=\"send('vpn-apply')\">Apply changes now (restart)</a></div>");
+            sb.Append("<div class='muted' style='margin:6px 0 6px'>Routing changes apply on next launch (the engine proxy is set at startup) &mdash; use <b>Apply changes now</b> to restart immediately. Egress: HTTPS-first, trackers/ads blocked, no telemetry &mdash; all requests user-initiated. Recognition runs no exit servers; every exit above is one you bring (self-hosted, a provider proxy, WireGuard, or Tor).</div>");
             if (!string.IsNullOrWhiteSpace(_netExitCheckUrl))
                 sb.Append("<div style='margin:2px 0 18px'><a class='btn ghost' onclick=\"send('verify-exit')\">Verify exit IP</a> <span class='u'>&nbsp;opens " + Esc(_netExitCheckUrl) + " (only when you click)</span></div>");
 
@@ -1192,11 +1270,12 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 case "open-packets": OpenFolder(Path.Combine(_repoRoot, "packets")); break;
                 case "vpn-off": SetVpnOff(); break;
                 case "vpn-optimize": Status("probing endpoints for best placement…"); _ = OptimizeVpnAsync(tab); break;
+                case "vpn-apply": RestartToApply(); break;
             }
             if (msg.StartsWith("vpn-pick:"))
             {
                 var ep = _netEndpoints.FirstOrDefault(x => x.Name == msg.Substring("vpn-pick:".Length));
-                if (ep != null) SetVpnEndpoint(ep);
+                if (ep != null) _ = SetVpnEndpoint(ep);
             }
         }
 

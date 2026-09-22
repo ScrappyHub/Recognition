@@ -1,14 +1,1 @@
-{
-  "schema": "recognition.network.v1",
-  "mode": "off",
-  "proxy": "",
-  "exit_region": "",
-  "exit_check_url": "https://api.ipify.org?format=json",
-  "auto_optimize": false,
-  "endpoints": [
-    { "name": "tor-local", "region": "Local (Tor)", "proxy": "socks5://127.0.0.1:9050" },
-    { "name": "exit-us",   "region": "US (edit host)", "proxy": "socks5://REPLACE-US-HOST:1080" },
-    { "name": "exit-eu",   "region": "EU (edit host)", "proxy": "socks5://REPLACE-EU-HOST:1080" }
-  ],
-  "notes": "SELF-OWNED / bring-your-own exits — Recognition operates no servers. 'tor-local' works if you run Tor (SOCKS 9050). Replace the exit-us/exit-eu hosts with YOUR own WireGuard/SOCKS/HTTP exits (self-hosted or a provider), or add more { name, region, proxy }. Pick one in Settings > Network or the toolbar VPN menu, or Auto-optimize to select the lowest-latency reachable exit. Incognito always routes through the first available endpoint. Routing changes apply on next launch (the engine proxy is set at startup)."
-}
+{"schema":"recognition.network.v1","mode":"proxy","proxy":"socks5://REPLACE-EU-HOST:1080","exit_region":"EU (edit host)","exit_check_url":"https://api.ipify.org?format=json","auto_optimize":false,"endpoints":[{"name":"tor-local","region":"Local (Tor)","proxy":"socks5://127.0.0.1:9050"},{"name":"exit-us-east","region":"US East (edit host)","proxy":"socks5://REPLACE-US-EAST-HOST:1080"},{"name":"exit-us-west","region":"US West (edit host)","proxy":"socks5://REPLACE-US-WEST-HOST:1080"},{"name":"exit-ca","region":"Canada (edit host)","proxy":"socks5://REPLACE-CA-HOST:1080"},{"name":"exit-uk","region":"UK (edit host)","proxy":"socks5://REPLACE-UK-HOST:1080"},{"name":"exit-eu","region":"EU (edit host)","proxy":"socks5://REPLACE-EU-HOST:1080"},{"name":"exit-de","region":"Germany (edit host)","proxy":"socks5://REPLACE-DE-HOST:1080"},{"name":"exit-nl","region":"Netherlands (edit host)","proxy":"socks5://REPLACE-NL-HOST:1080"},{"name":"exit-ch","region":"Switzerland (edit host)","proxy":"socks5://REPLACE-CH-HOST:1080"},{"name":"exit-sg","region":"Singapore (edit host)","proxy":"socks5://REPLACE-SG-HOST:1080"},{"name":"exit-jp","region":"Japan (edit host)","proxy":"socks5://REPLACE-JP-HOST:1080"},{"name":"exit-au","region":"Australia (edit host)","proxy":"socks5://REPLACE-AU-HOST:1080"},{"name":"byo-http","region":"Custom HTTP proxy (edit host)","proxy":"http://REPLACE-HTTP-HOST:8080"},{"name":"byo-socks","region":"Custom SOCKS5 proxy (edit host)","proxy":"socks5://REPLACE-SOCKS-HOST:1080"}]}
