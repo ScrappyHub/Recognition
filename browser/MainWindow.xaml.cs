@@ -39,6 +39,8 @@ namespace Recognition.Browser
 
         private GovernedHistory _history = null!;
         private GovernedActions _actions = null!;
+        private GovernedActions _cookies = null!;   // dedicated governed ledger for cookie state changes (§23)
+        private readonly Dictionary<string, string> _cookieLastSeen = new();   // domain|name -> value_sha256, dedupes the ledger to real changes
         private readonly List<Bookmark> _bookmarks = new();
         private readonly List<DownloadRec> _downloads = new();
         private bool _suppressSuggest;
@@ -154,6 +156,8 @@ document.addEventListener('keydown',function(e){
                 _actions = new GovernedActions(Path.Combine(_repoRoot, "runtime", "actions.v1.enc"));
                 _actions.Load();
                 _actions.Append("session.start");
+                _cookies = new GovernedActions(Path.Combine(_repoRoot, "runtime", "cookies.v1.enc"));
+                _cookies.Load();
                 LoadBookmarks();
                 LoadDownloads();
                 LoadSettings();
@@ -1222,6 +1226,15 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Verified at every launch against a signed record (Ed25519, pinned trust root). " +
                       "A modified binary is refused before the browser opens.</div>");
 
+            sb.Append("<h1 style='font-size:16px'>Cookies (&sect;23)</h1>");
+            bool cookOk = _cookies != null && _cookies.Verify(out int cookVerified);
+            sb.Append("<div class='kv'><div class='k'>Governed receipts</div><div class='v'>" + (_cookies?.Count ?? 0) + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Chain</div><div class='v' style='color:" + (cookOk ? "#7fd6a0" : "#e06c6c") + "'>" + (cookOk ? "verified" : "TAMPERED / broken") + "</div></div>");
+            sb.Append("<div class='muted' style='margin:6px 0 10px'>Cookie values are already encrypted at rest by the engine's own profile store (OS-protected). Recognition additionally keeps its own encrypted, hash-chained witness of cookie adds/changes per domain (name+value stored as SHA-256 only, never cleartext) and every clear action.</div>");
+            sb.Append("<div style='margin:0 0 18px;display:flex;gap:10px;flex-wrap:wrap'>" +
+                      "<a class='btn ghost' onclick=\"send('cookies-clear-site')\">Clear cookies for this site</a>" +
+                      "<a class='btn ghost' onclick=\"send('cookies-clear-all')\">Clear all cookies</a></div>");
+
             sb.Append("<h1 style='font-size:16px'>Action receipts (prove-it-in-every-action)</h1>");
             bool actOk = _actions != null && _actions.Verify(out int actVerified2);
             int actCount = _actions?.Count ?? 0;
@@ -1287,6 +1300,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 case "vpn-off": SetVpnOff(); break;
                 case "vpn-optimize": Status("probing endpoints for best placement…"); _ = OptimizeVpnAsync(tab); break;
                 case "vpn-apply": RestartToApply(); break;
+                case "cookies-clear-all": ClearAllCookies(); if (tab.Internal == "settings") LoadInternal(tab, "settings"); break;
+                case "cookies-clear-site": ClearSiteCookies(); if (tab.Internal == "settings") LoadInternal(tab, "settings"); break;
             }
             if (msg.StartsWith("vpn-pick:"))
             {
@@ -1332,6 +1347,65 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             }
             catch { return -1; }
         }
+
+        // ---- governed cookies (§23): encrypted-at-rest ledger of cookie state changes ---
+        // WebView2/Chromium already encrypts cookie VALUES at rest in its own profile store
+        // (OS-protected). This adds Recognition's own governed witness: a deterministic,
+        // append-only, hash-chained, DPAPI-encrypted receipt for every cookie ADD/CHANGE we
+        // observe (via CookieManager.GetCookiesAsync on each navigation) and every clear
+        // action, with the cookie's name+value stored only as a SHA-256 (never cleartext) —
+        // same privacy stance as the action/history ledgers. Domain is kept in the action
+        // label since it's already visible elsewhere (downloads/bookmarks store raw URLs).
+        private async Task SnapshotCookiesAsync(BrowserTab tab, string url)
+        {
+            try
+            {
+                var mgr = tab.Web.CoreWebView2.CookieManager;
+                if (mgr == null) return;
+                var cookies = await mgr.GetCookiesAsync(url);
+                foreach (var c in cookies)
+                {
+                    var key = c.Domain + "|" + c.Name;
+                    var valSha = Sha256Hex(c.Name + "" + c.Value);
+                    if (_cookieLastSeen.TryGetValue(key, out var prevSha) && prevSha == valSha) continue;   // unchanged — skip
+                    bool isNew = !_cookieLastSeen.ContainsKey(key);
+                    _cookieLastSeen[key] = valSha;
+                    _cookies.Append((isNew ? "cookie.new:" : "cookie.change:") + c.Domain, c.Name + "" + c.Value);
+                }
+            }
+            catch { /* cookie governance is best-effort witness; never blocks browsing */ }
+        }
+
+        private void ClearAllCookies()
+        {
+            try
+            {
+                var a = Active;
+                if (a == null || !a.Ready) { Status("no active tab to clear cookies from"); return; }
+                a.Web.CoreWebView2.CookieManager.DeleteAllCookies();
+                _cookieLastSeen.Clear();
+                _cookies.Append("cookies.clear_all");
+                Status("all cookies cleared");
+            }
+            catch (Exception ex) { Status("clear cookies error: " + ex.Message); }
+        }
+
+        private async void ClearSiteCookies()
+        {
+            try
+            {
+                var a = Active; if (a == null || !a.Ready || a.IsInternal || string.IsNullOrEmpty(a.CurrentUrl)) return;
+                var mgr = a.Web.CoreWebView2.CookieManager;
+                var cookies = await mgr.GetCookiesAsync(a.CurrentUrl);
+                foreach (var c in cookies) { mgr.DeleteCookie(c); _cookieLastSeen.Remove(c.Domain + "|" + c.Name); }
+                var host = TryHost(a.CurrentUrl);
+                _cookies.Append("cookies.clear_site:" + host, host);
+                Status("cookies cleared for " + host);
+            }
+            catch (Exception ex) { Status("clear site cookies error: " + ex.Message); }
+        }
+
+        private static string TryHost(string url) { try { return new Uri(url).Host; } catch { return url; } }
 
         private void OpenFolder(string path)
         {
@@ -1443,7 +1517,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             var title = tab.Web.CoreWebView2.DocumentTitle ?? "";
             tab.CurrentUrl = url; tab.CurrentTitle = title;
             tab.Visits.Add((url, title, DateTime.UtcNow));
-            if (!tab.Private) { _history.Append(url, title); _actions.Append("navigate", url); }   // private tabs leave no persisted trace
+            if (!tab.Private) { _history.Append(url, title); _actions.Append("navigate", url); _ = SnapshotCookiesAsync(tab, url); }   // private tabs leave no persisted trace
             SetHeader(tab, title);
             if (ReferenceEquals(tab, Active)) { SetAddress(tab); UpdateStar(tab); UpdateShield(); Status($"visited {TotalVisits()}: {title}"); }
         }
@@ -1630,6 +1704,14 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                           J("verified") + ":" + actVerified + "," +
                           J("chain_ok") + ":" + (actOk ? "true" : "false") + "," +
                           J("head_hash") + ":" + J(_actions.Head) + "}");
+
+                bool cookChainOk = _cookies.Verify(out int cookChainVerified);
+                WriteLf(Path.Combine(dir, "cookie_receipts.json"),
+                    "{" + J("schema") + ":" + J("recognition.cookie_receipts.v1") + "," +
+                          J("count") + ":" + _cookies.Count + "," +
+                          J("verified") + ":" + cookChainVerified + "," +
+                          J("chain_ok") + ":" + (cookChainOk ? "true" : "false") + "," +
+                          J("head_hash") + ":" + J(_cookies.Head) + "}");
 
                 var script = Path.Combine(_repoRoot, "scripts", "recognition_export_session_packet_v1.ps1");
                 var psi = new ProcessStartInfo("powershell.exe",

@@ -68,6 +68,7 @@ $plan.Add(@{ id="extension_governance_selftest"; script="_selftest_recognition_e
 $plan.Add(@{ id="governed_launcher_selftest"; script="_selftest_recognition_launch_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_LAUNCH_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="history_engine_selftest"; script="_selftest_recognition_history_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_HISTORY_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="action_receipts_selftest"; script="_selftest_recognition_action_receipts_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_ACTION_RECEIPTS_V1_OK"; mandatory=$true })
+$plan.Add(@{ id="cookie_receipts_selftest"; script="_selftest_recognition_cookie_receipts_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_COOKIE_RECEIPTS_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="chain_anchor_selftest"; script="_selftest_recognition_chain_anchor_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_CHAIN_ANCHOR_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="identity_chain_selftest"; script="_selftest_recognition_identity_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_IDENTITY_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="softwareid_selftest"; script="_selftest_recognition_softwareid_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_SOFTWAREID_V1_OK"; mandatory=$true })
