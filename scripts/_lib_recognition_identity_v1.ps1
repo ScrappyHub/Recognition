@@ -46,7 +46,39 @@ function RID-Paths([string]$RepoRoot){
     Dir        = $dir
     Descriptor = Join-Path $dir "identity.json"
     Chain      = Join-Path $dir "identity.chain.v1.ndjson"
+    SaltEnc    = Join-Path $dir "identity.salt.enc"
   }
+}
+
+# ---- Identity Vault / Layer 0 (§9,§27): Windows-DPAPI-sealed identity secret ----
+# The descriptor (identity.json) holds only non-secret, one-way hash outputs
+# (device_id/user_id/vault_id/recognition_identity_id) — safe in cleartext.
+# The SALT is the one reproducible secret (know it + the account/device names and
+# you can test candidate identities against it), so it is sealed at rest via
+# Windows DPAPI (CurrentUser scope, no passphrase) — the same encryption model the
+# browser already uses for history/actions/cookies/downloads/bookmarks — instead of
+# living in the plaintext descriptor. This is per-Windows-account bound and requires
+# no password prompt, matching the rest of the browser's zero-friction encryption.
+function RID-WriteSecure([string]$Path,[string]$Text){
+  $dir = Split-Path -Parent $Path
+  if($dir -and -not (Test-Path -LiteralPath $dir)){ New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+  $enc = New-Object System.Text.UTF8Encoding($false)
+  $bytes = $enc.GetBytes([string]$Text)
+  $blob = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+  [System.IO.File]::WriteAllBytes($Path, $blob)
+}
+function RID-ReadSecure([string]$Path){
+  if(-not (Test-Path -LiteralPath $Path -PathType Leaf)){ return $null }
+  $blob = [System.IO.File]::ReadAllBytes($Path)
+  $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+  return (New-Object System.Text.UTF8Encoding($false)).GetString($bytes)
+}
+# Recover the sealed salt. Throws (does not silently return garbage) if the file is
+# missing or has been tampered with — DPAPI's own AEAD fails closed on modified
+# ciphertext, which is the negative vector the selftest exercises.
+function RID-UnsealSalt([hashtable]$P){
+  if(-not (Test-Path -LiteralPath $P.SaltEnc -PathType Leaf)){ RID-Die "IDENTITY_SALT_MISSING: not sealed yet" }
+  return RID-ReadSecure $P.SaltEnc
 }
 
 # safe dict read for parsed descriptor (OrderedDictionary)
@@ -83,7 +115,22 @@ function RID-AppendWith([hashtable]$P,$descriptor,[string]$Type,$Data){
 function RID-EnsureIdentity([string]$RepoRoot){
   $P = RID-Paths $RepoRoot
   $existing = RID-LoadDescriptor $P
-  if($null -ne $existing){ return $existing }
+  if($null -ne $existing){
+    # migration: an older descriptor may still carry the salt in cleartext —
+    # seal it into the DPAPI vault and rewrite the descriptor without it.
+    $legacySalt = RID-Get $existing "salt"
+    if($null -ne $legacySalt -and [string]$legacySalt -ne ""){
+      RID-WriteSecure $P.SaltEnc ([string]$legacySalt)
+      $migrated = [ordered]@{}
+      foreach($k in @($existing.Keys)){ if([string]$k -ne "salt"){ $migrated[[string]$k] = $existing[$k] } }
+      $enc = New-Object System.Text.UTF8Encoding($false)
+      $txt = (RCE-CanonJson $migrated)
+      if(-not $txt.EndsWith("`n")){ $txt += "`n" }
+      [System.IO.File]::WriteAllText($P.Descriptor, $txt, $enc)
+      return $migrated
+    }
+    return $existing
+  }
 
   RCE-EnsureDir $P.Dir
   $salt       = RID-RandHex 16
@@ -94,6 +141,9 @@ function RID-EnsureIdentity([string]$RepoRoot){
   $ridBase    = RCE-CanonJson ([ordered]@{ device_id=$deviceId; user_id=$userId; vault_id=$vaultId; created_utc=$createdUtc; salt=$salt })
   $rid        = RID-Sha256Hex $ridBase
 
+  # seal the one secret (salt) via DPAPI before it ever touches the plaintext descriptor
+  RID-WriteSecure $P.SaltEnc $salt
+
   $descriptor = [ordered]@{
     schema                  = $script:RID_SCHEMA
     recognition_identity_id = $rid
@@ -101,7 +151,7 @@ function RID-EnsureIdentity([string]$RepoRoot){
     user_id                 = $userId
     vault_id                = $vaultId
     created_utc             = $createdUtc
-    salt                    = $salt
+    salt_sealed             = $true
   }
   $enc = New-Object System.Text.UTF8Encoding($false)
   $txt = (RCE-CanonJson $descriptor)
