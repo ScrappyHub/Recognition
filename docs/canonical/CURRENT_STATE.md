@@ -79,9 +79,11 @@ The handoff has no separate DoD; §31's ✓ pattern **is** the definition, gover
   WebView2 shell (`browser/`) now builds, runs, and packages green as a full feature
   browser — multi-tab, own start page, omnibox over a hash-chained history, bookmarks,
   downloads, find-in-page, zoom, keyboard shortcuts, fail-closed locked startup, and
-  session export to a governed packet. Convenience stores (history/bookmarks/downloads)
-  live cleartext under `runtime/` (gitignored, vault-sealable); encrypting them at rest
-  per §23/§25/§26 and adding VPN state (§5.3) + favicons are the remaining browser items.
+  session export to a governed packet. Convenience stores (history/bookmarks/downloads/
+  actions/cookies) are now **encrypted at rest** under `runtime/` (Windows DPAPI,
+  gitignored) per §23/§25/§26, and VPN state (§5.3) is surfaced live + exported —
+  this paragraph previously said otherwise and was stale; the scoreboard rows above
+  are current. Favicon caching remains a minor remaining browser item.
   The §31 "clean browser session" ✓ predates v2 and stays synthetic until real sessions
   from this shell feed the evidence chain.
 - **Ecosystem canon not available** — `CLAUDE.md` requires reading
