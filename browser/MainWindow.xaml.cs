@@ -42,6 +42,8 @@ namespace Recognition.Browser
         private GovernedActions _actions = null!;
         private GovernedActions _cookies = null!;   // dedicated governed ledger for cookie state changes (§23)
         private readonly Dictionary<string, string> _cookieLastSeen = new();   // domain|name -> value_sha256, dedupes the ledger to real changes
+        private GovernedActions _sitePolicy = null!;   // per-origin policy ledger (§53.1/§54.1) — permissions + tracker-blocking overrides
+        private readonly Dictionary<string, string> _sitePolicyState = new(StringComparer.OrdinalIgnoreCase);   // "key|origin" -> value, replayed from the ledger (latest wins)
         private readonly List<Bookmark> _bookmarks = new();
         private readonly List<DownloadRec> _downloads = new();
         private bool _suppressSuggest;
@@ -159,6 +161,9 @@ document.addEventListener('keydown',function(e){
                 _actions.Append("session.start");
                 _cookies = new GovernedActions(Path.Combine(_repoRoot, "runtime", "cookies.v1.enc"));
                 _cookies.Load();
+                _sitePolicy = new GovernedActions(Path.Combine(_repoRoot, "runtime", "site_policy.v1.enc"));
+                _sitePolicy.Load();
+                RebuildSitePolicyState();
                 LoadBookmarks();
                 LoadDownloads();
                 LoadSettings();
@@ -341,6 +346,7 @@ document.addEventListener('keydown',function(e){
             // Brave-style network blocking
             web.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             web.CoreWebView2.WebResourceRequested += (o, ev) => OnResourceRequested(tab, ev);
+            web.CoreWebView2.PermissionRequested  += (o, ev) => OnPermissionRequested(tab, ev);
 
             web.CoreWebView2.NavigationStarting   += (o, ev) => OnNavStarting(tab, ev);
             web.CoreWebView2.SourceChanged        += (o, ev) => OnSourceChanged(tab);
@@ -453,6 +459,13 @@ document.addEventListener('keydown',function(e){
             if (!_blockingEnabled || _env == null) return;
             try
             {
+                // Per-origin exemption (§53.1/§54.1): the SITE being visited (not the
+                // resource host) may be exempted from blocking by an explicit, receipted
+                // site-policy decision — lets one broken site opt out without disabling
+                // the global shield for every other site.
+                var pageHost = TryHost(tab.CurrentUrl);
+                if (!string.IsNullOrEmpty(pageHost) && SitePolicyGet(pageHost, "tracker_blocking", "inherit") == "off") return;
+
                 var host = new Uri(e.Request.Uri).Host;
                 if (!IsBlockedHost(host)) return;
                 e.Response = _env.CreateWebResourceResponse(null, 403, "Blocked by Recognition", "");
@@ -460,6 +473,72 @@ document.addEventListener('keydown',function(e){
                 if (ReferenceEquals(tab, Active)) UpdateShield();
             }
             catch { }
+        }
+
+        // ---- per-origin permission governance (§53.1/§54.1) ---------------------
+        // WebView2 fires PermissionRequested for camera/mic/geolocation/notifications/
+        // clipboard/etc. Recognition has NO built-in interactive prompt (that would be
+        // unmanaged, untested UI on a hot event path) — instead every permission is
+        // DENIED BY DEFAULT unless an operator has explicitly allowed that exact
+        // (origin, kind) pair via Settings → Site Permissions. This mirrors the same
+        // explicit-allowlist pattern already used for VPN exits and extensions: nothing
+        // is granted on first sight, and every decision (grant or refusal) is receipted.
+        private void OnPermissionRequested(BrowserTab tab, CoreWebView2PermissionRequestedEventArgs e)
+        {
+            try
+            {
+                var kind = e.PermissionKind.ToString();
+                var origin = TryHost(e.Uri);
+                var decision = SitePolicyGet(origin, "perm." + kind, "deny");
+                if (decision == "allow")
+                {
+                    e.State = CoreWebView2PermissionState.Allow;
+                    _actions?.Append("permission.auto_allow:" + kind, origin);
+                }
+                else
+                {
+                    e.State = CoreWebView2PermissionState.Deny;
+                    _actions?.Append("permission.auto_deny:" + kind, origin);
+                    Status(kind + " request denied for " + origin + " — manage in Settings → Site Permissions");
+                }
+            }
+            catch { try { e.State = CoreWebView2PermissionState.Deny; } catch { } }
+        }
+
+        // ---- per-origin site policy store (§53.1/§54.1) --------------------------
+        // Reuses the ALREADY-PROVEN GovernedActions hash-chained, DPAPI-encrypted
+        // ledger wholesale (zero new crypto). Each decision is one append-only record
+        // whose ACTION field carries "site_policy.set|<key>|<origin>|<value>" (cleartext
+        // — these are governance decisions, not secrets, same as "vpn.pick"/"extension.loaded").
+        // Current state is a pure replay: latest record per (key,origin) wins.
+        private const string SitePolicyPrefix = "site_policy.set|";
+
+        private void RebuildSitePolicyState()
+        {
+            _sitePolicyState.Clear();
+            if (_sitePolicy == null) return;
+            foreach (var it in _sitePolicy.Items)
+            {
+                if (!it.Action.StartsWith(SitePolicyPrefix, StringComparison.Ordinal)) continue;
+                var parts = it.Action.Split('|');
+                if (parts.Length != 4) continue;
+                _sitePolicyState[parts[1] + "|" + parts[2].ToLowerInvariant()] = parts[3];
+            }
+        }
+
+        private void SitePolicySet(string origin, string key, string value)
+        {
+            if (string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(key)) return;
+            origin = origin.ToLowerInvariant();
+            _sitePolicy.Append(SitePolicyPrefix + key + "|" + origin + "|" + value);
+            _sitePolicyState[key + "|" + origin] = value;
+        }
+
+        private string SitePolicyGet(string origin, string key, string def)
+        {
+            if (string.IsNullOrWhiteSpace(origin)) return def;
+            origin = origin.ToLowerInvariant();
+            return _sitePolicyState.TryGetValue(key + "|" + origin, out var v) ? v : def;
         }
 
         private bool IsBlockedHost(string host)
@@ -1328,6 +1407,44 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + _extPaths.Count + " configured") : "off") + "</div></div>");
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Configured in <code>config\\extensions.v1.json</code>: an unpacked folder, a <code>.zip</code>, or a <code>.crx</code> (universal adapter — all three are normalized to an unpacked folder). Every extension must ALSO pass the governance load gate (<code>recognition_extension_governance_v1.ps1</code>): its current bytes are hashed and checked against a ledger decision an operator recorded explicitly via <code>-Action register</code>. Nothing loads on first sight, on a tamper, or on a review/deny decision &mdash; refusals are receipted like any other action.</div>");
 
+            sb.Append("<h1 style='font-size:16px'>Site Permissions &amp; Policy (&sect;53.1/&sect;54.1)</h1>");
+            var curOrigin = (Active != null && !Active.IsInternal) ? TryHost(Active.CurrentUrl) : "";
+            if (string.IsNullOrEmpty(curOrigin))
+                sb.Append("<div class='muted' style='margin:6px 0 10px'>Open a site in another tab to manage its permissions and tracker-blocking exemption here.</div>");
+            else
+            {
+                sb.Append("<div class='muted' style='margin:6px 0 6px'>Current site: <b>" + Esc(curOrigin) + "</b>. Every camera/microphone/geolocation/notification request is <b>denied by default</b> until explicitly allowed here &mdash; there is no interactive popup prompt. Every decision is receipted.</div>");
+                foreach (var kind in new[] { "Camera", "Microphone", "Geolocation", "Notifications" })
+                {
+                    var dec = SitePolicyGet(curOrigin, "perm." + kind, "deny");
+                    sb.Append("<div class='row'><div><div class='t'>" + kind + "</div><div class='u'>current: " + (dec == "allow" ? "allowed" : "denied") + "</div></div>" +
+                              "<div class='ts'>" +
+                              "<a class='btn" + (dec == "allow" ? "" : " ghost") + "' onclick=\"send('site-perm:" + Attr(curOrigin) + ":" + kind + ":allow')\">Allow</a> " +
+                              "<a class='btn" + (dec == "allow" ? " ghost" : "") + "' onclick=\"send('site-perm:" + Attr(curOrigin) + ":" + kind + ":deny')\">Deny</a>" +
+                              "</div></div>");
+                }
+                var trackDec = SitePolicyGet(curOrigin, "tracker_blocking", "inherit");
+                sb.Append("<div class='row'><div><div class='t'>Tracker/ad blocking for this site</div><div class='u'>" +
+                          (trackDec == "off" ? "exempted (off for this site only)" : "inherits the global setting") + "</div></div>" +
+                          "<div class='ts'><a class='btn ghost' onclick=\"send('site-track:" + Attr(curOrigin) + ":" +
+                          (trackDec == "off" ? "inherit" : "off") + "')\">" + (trackDec == "off" ? "Remove exemption" : "Exempt this site") + "</a></div></div>");
+            }
+            if (_sitePolicyState.Count > 0)
+            {
+                sb.Append("<div class='muted' style='margin:10px 0 4px'>All recorded per-origin decisions (" + _sitePolicyState.Count + "):</div>");
+                foreach (var kv in _sitePolicyState.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    var sep = kv.Key.IndexOf('|');
+                    var k = sep >= 0 ? kv.Key.Substring(0, sep) : kv.Key;
+                    var org = sep >= 0 ? kv.Key.Substring(sep + 1) : "";
+                    sb.Append("<div class='kv'><div class='k'>" + Esc(org) + " &mdash; " + Esc(k) + "</div><div class='v'>" + Esc(kv.Value) + "</div></div>");
+                }
+            }
+            bool spOk = _sitePolicy != null && _sitePolicy.Verify(out int spVerified);
+            sb.Append("<div class='muted' style='margin:6px 0 18px'>Policy ledger: " + (_sitePolicy?.Count ?? 0) + " receipts, chain " +
+                      (spOk ? "<span style='color:#7fd6a0'>verified</span>" : "<span style='color:#e06c6c'>TAMPERED / broken</span>") +
+                      ". Same hash-chained, DPAPI-encrypted format as action receipts &mdash; the current state above is a pure replay (latest decision per site/permission wins).</div>");
+
             sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
             var (sidState, sidId) = SoftwareIdState();
             var sidColor = sidState == "verified authentic" ? "#7fd6a0" : (sidState.StartsWith("MISMATCH") ? "#e06c6c" : "#c9a24a");
@@ -1418,6 +1535,26 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             {
                 var ep = _netEndpoints.FirstOrDefault(x => x.Name == msg.Substring("vpn-pick:".Length));
                 if (ep != null) _ = SetVpnEndpoint(ep);
+            }
+            else if (msg.StartsWith("site-perm:"))
+            {
+                var parts = msg.Substring("site-perm:".Length).Split(':');
+                if (parts.Length == 3)
+                {
+                    SitePolicySet(parts[0], "perm." + parts[1], parts[2]);
+                    Status((parts[2] == "allow" ? "allowed " : "denied ") + parts[1] + " for " + parts[0]);
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
+                }
+            }
+            else if (msg.StartsWith("site-track:"))
+            {
+                var parts = msg.Substring("site-track:".Length).Split(':');
+                if (parts.Length == 2)
+                {
+                    SitePolicySet(parts[0], "tracker_blocking", parts[1]);
+                    Status("tracker blocking for " + parts[0] + ": " + (parts[1] == "off" ? "exempted" : "inherits global setting"));
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
+                }
             }
         }
 
@@ -1823,6 +1960,15 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                           J("verified") + ":" + cookChainVerified + "," +
                           J("chain_ok") + ":" + (cookChainOk ? "true" : "false") + "," +
                           J("head_hash") + ":" + J(_cookies.Head) + "}");
+
+                bool spChainOk = _sitePolicy.Verify(out int spChainVerified);
+                WriteLf(Path.Combine(dir, "site_policy_receipts.json"),
+                    "{" + J("schema") + ":" + J("recognition.site_policy_receipts.v1") + "," +
+                          J("count") + ":" + _sitePolicy.Count + "," +
+                          J("verified") + ":" + spChainVerified + "," +
+                          J("chain_ok") + ":" + (spChainOk ? "true" : "false") + "," +
+                          J("distinct_decisions") + ":" + _sitePolicyState.Count + "," +
+                          J("head_hash") + ":" + J(_sitePolicy.Head) + "}");
 
                 var script = Path.Combine(_repoRoot, "scripts", "recognition_export_session_packet_v1.ps1");
                 var psi = new ProcessStartInfo("powershell.exe",
