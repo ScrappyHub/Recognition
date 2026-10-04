@@ -65,6 +65,7 @@ if(Test-Path -LiteralPath $liveChain -PathType Leaf){
   $plan.Add(@{ id="live_event_chain_verify"; script="recognition_verify_event_chain_v2.ps1"; args=@("-RepoRoot",$RepoRoot); token="RECOGNITION_EVENT_CHAIN_VERIFY_V2_OK"; mandatory=$true })
 }
 $plan.Add(@{ id="extension_governance_selftest"; script="_selftest_recognition_extension_governance_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_EXTENSION_GOVERNANCE_V1_OK"; mandatory=$true })
+$plan.Add(@{ id="extension_adapter_selftest"; script="_selftest_recognition_extension_adapter_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_EXTENSION_ADAPTER_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="governed_launcher_selftest"; script="_selftest_recognition_launch_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_LAUNCH_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="history_engine_selftest"; script="_selftest_recognition_history_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_HISTORY_V1_OK"; mandatory=$true })
 $plan.Add(@{ id="action_receipts_selftest"; script="_selftest_recognition_action_receipts_v1.ps1"; args=@("-RepoRoot",$RepoRoot); token="SELFTEST_RECOGNITION_ACTION_RECEIPTS_V1_OK"; mandatory=$true })

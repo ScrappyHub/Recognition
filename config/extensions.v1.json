@@ -2,5 +2,5 @@
   "schema": "recognition.extensions.v1",
   "enabled": false,
   "load": [],
-  "notes": "Governed Chromium extension allowlist. Set enabled=true and add absolute (or repo-relative) paths to UNPACKED extension folders in 'load'. Only allowlisted extensions are loaded (WebView2 AddBrowserExtensionAsync). Example: \"C:/ext/ublock\" or \"extensions/my-ext\"."
+  "notes": "Governed Chromium extension allowlist. Set enabled=true and add absolute (or repo-relative) paths to 'load': an unpacked extension folder, a .zip, or a .crx (CRX2/CRX3) — all three are accepted (universal adapter; zip/crx are unpacked once into runtime/extensions_cache/<sha256>/). Listing a path here is NOT enough to load it: every resolved folder must also pass the governance load gate (scripts/recognition_extension_governance_v1.ps1 -Action verify), which only succeeds if an operator has already run '-Action register' for those EXACT bytes and the policy (config/extension_policy.v1.json) decided 'allow'. Registering is a separate, explicit step — the browser never auto-registers or auto-allows an extension. Examples: \"C:/ext/ublock\", \"extensions/my-ext.zip\", \"extensions/my-ext.crx\"."
 }

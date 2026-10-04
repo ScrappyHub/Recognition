@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -735,23 +736,133 @@ document.addEventListener('keydown',function(e){
             catch { }
         }
 
+        // Universal extension adapter: config/extensions.v1.json entries may name an
+        // unpacked folder, a .zip, or a .crx (CRX2/CRX3) — all are normalized to an
+        // unpacked, content-addressed cache folder before anything else happens. NO
+        // format is auto-trusted: every resolved folder must pass the SAME governance
+        // load gate (recognition_extension_governance_v1.ps1 -Action verify), which
+        // recomputes the extension_id from the CURRENT bytes and refuses unless the
+        // governance ledger already records an 'allow' decision for those exact bytes.
+        // An extension is never auto-registered by the browser — registering (deciding
+        // to allow) is a separate, explicit operator action via the governance CLI.
         private async Task LoadExtensionsAsync(BrowserTab tab)
         {
             if (_extLoaded || !_extEnabled || tab.Web.CoreWebView2 == null) return;
             _extLoaded = true;
-            int ok = 0;
+            int ok = 0, refused = 0;
             try
             {
                 var profile = tab.Web.CoreWebView2.Profile;
                 foreach (var rel in _extPaths)
                 {
-                    var path = Path.IsPathRooted(rel) ? rel : Path.Combine(_repoRoot, rel);
-                    if (!Directory.Exists(path)) continue;
-                    try { await profile.AddBrowserExtensionAsync(path); ok++; } catch { }
+                    var source = Path.IsPathRooted(rel) ? rel : Path.Combine(_repoRoot, rel);
+                    string? dir;
+                    try { dir = PrepareExtensionSource(source); }
+                    catch (Exception ex) { Status("extension package error (" + rel + "): " + ex.Message); continue; }
+                    if (dir == null) continue;
+                    var resolvedDir = dir;   // definite non-null capture for the lambda below
+
+                    var (governed, extId, note) = await Task.Run(() => VerifyExtensionGoverned(resolvedDir));
+                    if (!governed)
+                    {
+                        refused++;
+                        _actions?.Append("extension.refused", rel);
+                        Status("extension refused by governance: " + rel + " — " + note);
+                        continue;
+                    }
+                    try { await profile.AddBrowserExtensionAsync(dir); ok++; _actions?.Append("extension.loaded", extId); }
+                    catch (Exception ex) { Status("extension load error (" + rel + "): " + ex.Message); }
                 }
             }
             catch { }
-            if (ok > 0) Status($"loaded {ok} governed extension(s)");
+            if (ok > 0) Status($"loaded {ok} governed extension(s)" + (refused > 0 ? $", refused {refused}" : ""));
+            else if (refused > 0) Status($"all {refused} configured extension(s) refused by governance");
+        }
+
+        // Normalizes an extension source into an unpacked folder. A raw directory is
+        // used as-is; a .zip or .crx is extracted once into a content-addressed cache
+        // under runtime\extensions_cache\<sha256-of-source-file>\ (re-extraction is
+        // skipped if that cache folder already exists — deterministic and idempotent).
+        // Returns null for a missing/unsupported source (never throws for that case).
+        private string? PrepareExtensionSource(string source)
+        {
+            if (Directory.Exists(source)) return source;
+            if (!File.Exists(source)) return null;
+
+            var ext = Path.GetExtension(source).ToLowerInvariant();
+            if (ext != ".zip" && ext != ".crx") return null;
+
+            var bytes = File.ReadAllBytes(source);
+            var sourceHash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            var cacheDir = Path.Combine(_repoRoot, "runtime", "extensions_cache", sourceHash);
+            if (Directory.Exists(cacheDir) && Directory.EnumerateFileSystemEntries(cacheDir).Any())
+                return cacheDir;
+            Directory.CreateDirectory(cacheDir);
+
+            byte[] zipBytes = ext == ".crx" ? ExtractCrxZipPayload(bytes) : bytes;
+            var tmpZip = Path.Combine(Path.GetTempPath(), "rbext-" + Guid.NewGuid().ToString("N") + ".zip");
+            try
+            {
+                File.WriteAllBytes(tmpZip, zipBytes);
+                ZipFile.ExtractToDirectory(tmpZip, cacheDir, overwriteFiles: true);
+            }
+            finally { try { File.Delete(tmpZip); } catch { } }
+            return cacheDir;
+        }
+
+        // CRX2: magic(4) version(4)=2 pubKeyLen(4) sigLen(4) pubKey sig ZIP...
+        // CRX3: magic(4) version(4)=3 headerLen(4) header(headerLen bytes) ZIP...
+        // Only the offset to the embedded ZIP is needed — the governance load gate,
+        // not the CRX's own (possibly absent) signature, is what decides trust here.
+        private static byte[] ExtractCrxZipPayload(byte[] bytes)
+        {
+            if (bytes.Length < 16 || bytes[0] != 'C' || bytes[1] != 'r' || bytes[2] != '2' || bytes[3] != '4')
+                throw new InvalidDataException("not a CRX file (bad magic)");
+            uint version = BitConverter.ToUInt32(bytes, 4);
+            int zipStart;
+            if (version == 3)
+            {
+                uint headerLen = BitConverter.ToUInt32(bytes, 8);
+                zipStart = 12 + checked((int)headerLen);
+            }
+            else if (version == 2)
+            {
+                uint pubKeyLen = BitConverter.ToUInt32(bytes, 8);
+                uint sigLen = BitConverter.ToUInt32(bytes, 12);
+                zipStart = 16 + checked((int)pubKeyLen) + checked((int)sigLen);
+            }
+            else throw new InvalidDataException("unsupported CRX version: " + version);
+            if (zipStart < 0 || zipStart >= bytes.Length) throw new InvalidDataException("CRX header length out of range");
+            var zip = new byte[bytes.Length - zipStart];
+            Array.Copy(bytes, zipStart, zip, 0, zip.Length);
+            return zip;
+        }
+
+        // The load gate: shells out to the SAME governance tool used for operator
+        // registration (recognition_extension_governance_v1.ps1), so identity and
+        // policy decisions are computed by ONE already-selftested implementation
+        // rather than reimplemented (and risking drift) in C#. Refuses closed on any
+        // error — missing pwsh, missing ledger record, tampered bytes, or a
+        // review/deny decision all refuse the same way.
+        private (bool ok, string extId, string note) VerifyExtensionGoverned(string extDir)
+        {
+            try
+            {
+                var script = Path.Combine(_repoRoot, "scripts", "recognition_extension_governance_v1.ps1");
+                if (!File.Exists(script)) return (false, "", "governance script not found");
+                var psi = new ProcessStartInfo("pwsh.exe",
+                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\" -Action verify -ExtPath \"{extDir}\"")
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+                var p = Process.Start(psi);
+                if (p == null) return (false, "", "could not start pwsh");
+                var outp = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                var m = Regex.Match(outp, @"RECOGNITION_EXT_GOV_V1_VERIFY_OK:\s*(?<id>[0-9a-f]{64})");
+                if (m.Success) return (true, m.Groups["id"].Value, "allow");
+                var firstLine = outp.Split('\n').FirstOrDefault(l => l.Contains("FAIL") || l.Contains("REFUSED") || l.Contains("TAMPERED"))?.Trim();
+                return (false, "", string.IsNullOrEmpty(firstLine) ? "not governed" : firstLine);
+            }
+            catch (Exception ex) { return (false, "", "governance check error: " + ex.Message); }
         }
 
         // ---- keyboard shortcuts -------------------------------------------------
@@ -1214,8 +1325,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 sb.Append("<div style='margin:2px 0 18px'><a class='btn ghost' onclick=\"send('verify-exit')\">Verify exit IP</a> <span class='u'>&nbsp;opens " + Esc(_netExitCheckUrl) + " (only when you click)</span></div>");
 
             sb.Append("<h1 style='font-size:16px'>Extensions</h1>");
-            sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + _extPaths.Count + " allowlisted") : "off") + "</div></div>");
-            sb.Append("<div class='muted' style='margin:6px 0 18px'>Governed by an explicit allowlist in <code>config\\extensions.v1.json</code> (<code>enabled</code> + unpacked extension folder paths). Only allowlisted extensions load.</div>");
+            sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + _extPaths.Count + " configured") : "off") + "</div></div>");
+            sb.Append("<div class='muted' style='margin:6px 0 18px'>Configured in <code>config\\extensions.v1.json</code>: an unpacked folder, a <code>.zip</code>, or a <code>.crx</code> (universal adapter — all three are normalized to an unpacked folder). Every extension must ALSO pass the governance load gate (<code>recognition_extension_governance_v1.ps1</code>): its current bytes are hashed and checked against a ledger decision an operator recorded explicitly via <code>-Action register</code>. Nothing loads on first sight, on a tamper, or on a review/deny decision &mdash; refusals are receipted like any other action.</div>");
 
             sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
             var (sidState, sidId) = SoftwareIdState();
