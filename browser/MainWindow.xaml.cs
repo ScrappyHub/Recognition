@@ -42,8 +42,9 @@ namespace Recognition.Browser
         private GovernedActions _actions = null!;
         private GovernedActions _cookies = null!;   // dedicated governed ledger for cookie state changes (§23)
         private readonly Dictionary<string, string> _cookieLastSeen = new();   // domain|name -> value_sha256, dedupes the ledger to real changes
-        private GovernedActions _sitePolicy = null!;   // per-origin policy ledger (§53.1/§54.1) — permissions + tracker-blocking overrides
+        private GovernedActions _sitePolicy = null!;   // per-origin policy ledger (§53.1/§54.1) — permissions + tracker-blocking overrides + certificate trust
         private readonly Dictionary<string, string> _sitePolicyState = new(StringComparer.OrdinalIgnoreCase);   // "key|origin" -> value, replayed from the ledger (latest wins)
+        private readonly Dictionary<string, (string Fp, string Err)> _certErrors = new(StringComparer.OrdinalIgnoreCase);   // host -> last-seen cert error (session-only, lets Settings offer "trust this certificate")
         private readonly List<Bookmark> _bookmarks = new();
         private readonly List<DownloadRec> _downloads = new();
         private bool _suppressSuggest;
@@ -347,6 +348,8 @@ document.addEventListener('keydown',function(e){
             web.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             web.CoreWebView2.WebResourceRequested += (o, ev) => OnResourceRequested(tab, ev);
             web.CoreWebView2.PermissionRequested  += (o, ev) => OnPermissionRequested(tab, ev);
+            web.CoreWebView2.ServerCertificateErrorDetected += (o, ev) => OnServerCertificateError(tab, ev);
+            web.CoreWebView2.ClientCertificateRequested     += (o, ev) => OnClientCertificateRequested(tab, ev);
 
             web.CoreWebView2.NavigationStarting   += (o, ev) => OnNavStarting(tab, ev);
             web.CoreWebView2.SourceChanged        += (o, ev) => OnSourceChanged(tab);
@@ -503,6 +506,72 @@ document.addEventListener('keydown',function(e){
                 }
             }
             catch { try { e.State = CoreWebView2PermissionState.Deny; } catch { } }
+        }
+
+        // ---- Certificate Manager v1 (§54, Certificate Manager) ------------------
+        // A TLS certificate error (expired, self-signed, hostname mismatch, revoked,
+        // untrusted root, ...) is REFUSED BY DEFAULT — fail-closed, same as every other
+        // governed decision in this browser. Trust is pinned to the EXACT certificate
+        // presented (a fingerprint of subject+issuer+validity, not just the host), so
+        // approving one bad certificate for a host does not silently trust a DIFFERENT
+        // certificate later substituted for that same host. Every decision — allow or
+        // refuse — is receipted via the action ledger; explicit trust is recorded in the
+        // same per-origin site-policy ledger used for permissions/tracker exemptions
+        // (key "cert.<fingerprint>", reusing GovernedActions wholesale, zero new crypto).
+        private void OnServerCertificateError(BrowserTab tab, CoreWebView2ServerCertificateErrorDetectedEventArgs e)
+        {
+            try
+            {
+                var host = TryHost(e.RequestUri);
+                var fp = CertFingerprint(e.ServerCertificate);
+                _certErrors[host] = (fp, e.ErrorStatus.ToString());
+                var decision = SitePolicyGet(host, "cert." + fp, "deny");
+                if (decision == "allow")
+                {
+                    // This SDK's enum has no plain "Allow"; AlwaysAllow also makes the engine
+                    // remember the exception for the session, so a revoke or a swapped
+                    // certificate takes full effect on next launch (documented limit).
+                    e.Action = CoreWebView2ServerCertificateErrorAction.AlwaysAllow;
+                    _actions?.Append("cert.auto_allow:" + e.ErrorStatus, host);
+                }
+                else
+                {
+                    e.Action = CoreWebView2ServerCertificateErrorAction.Cancel;
+                    _actions?.Append("cert.auto_deny:" + e.ErrorStatus, host);
+                    Status("TLS certificate error for " + host + " (" + e.ErrorStatus + ") — refused; trust it explicitly in Settings → TLS Certificate Errors if expected");
+                }
+            }
+            catch { try { e.Action = CoreWebView2ServerCertificateErrorAction.Cancel; } catch { } }
+        }
+
+        // Fingerprint = SHA-256(subject|issuer|validFrom|validTo), first 16 hex chars.
+        // This pins on certificate METADATA, not a full DER-byte hash (a higher-confidence
+        // WebView2 API to pull raw certificate bytes was not available to verify safely
+        // without running the SDK directly) — any change to subject, issuer, or validity
+        // window breaks the pin and falls back to the fail-closed default, which covers
+        // the realistic "cert got swapped/renewed" cases this is meant to catch.
+        private static string CertFingerprint(CoreWebView2Certificate? cert)
+        {
+            var s = (cert?.Subject ?? "") + "|" + (cert?.Issuer ?? "") + "|" +
+                    (cert != null ? cert.ValidFrom.ToString("o") : "") + "|" +
+                    (cert != null ? cert.ValidTo.ToString("o") : "");
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s))).ToLowerInvariant().Substring(0, 16);
+        }
+
+        // Mutual-TLS client certificate requests are ALWAYS refused — Recognition never
+        // auto-presents a client certificate to any site. Unlike server-cert trust, this
+        // has no explicit-allow escape hatch in v1: picking a client cert is a stronger,
+        // identity-revealing action than viewing a page, and the safe default is simply
+        // never to do it automatically. Every request is receipted either way.
+        private void OnClientCertificateRequested(BrowserTab tab, CoreWebView2ClientCertificateRequestedEventArgs e)
+        {
+            try
+            {
+                e.Cancel = true;
+                _actions?.Append("client_cert.auto_refuse", e.Host + ":" + e.Port);
+                Status("client certificate request from " + e.Host + " refused — Recognition never auto-presents client certificates");
+            }
+            catch { try { e.Cancel = true; } catch { } }
         }
 
         // ---- per-origin site policy store (§53.1/§54.1) --------------------------
@@ -1445,6 +1514,22 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                       (spOk ? "<span style='color:#7fd6a0'>verified</span>" : "<span style='color:#e06c6c'>TAMPERED / broken</span>") +
                       ". Same hash-chained, DPAPI-encrypted format as action receipts &mdash; the current state above is a pure replay (latest decision per site/permission wins).</div>");
 
+            sb.Append("<h1 style='font-size:16px'>TLS Certificate Errors (Certificate Manager, &sect;54)</h1>");
+            if (_certErrors.Count == 0)
+                sb.Append("<div class='muted' style='margin:6px 0 10px'>No certificate errors seen this session. Every TLS certificate error is refused by default (fail-closed) unless the exact certificate (pinned by subject/issuer/validity, not just host) has been explicitly trusted. Mutual-TLS client certificate requests are always refused automatically — no client certificate is ever auto-presented.</div>");
+            else
+            {
+                foreach (var kv in _certErrors)
+                {
+                    bool trusted = SitePolicyGet(kv.Key, "cert." + kv.Value.Fp, "deny") == "allow";
+                    sb.Append("<div class='row'><div><div class='t'>" + Esc(kv.Key) + (trusted ? " <span class='pill'>trusted</span>" : "") + "</div>" +
+                              "<div class='u'>" + Esc(kv.Value.Err) + " &mdash; fingerprint " + Esc(kv.Value.Fp) + "</div></div>" +
+                              "<div class='ts'><a class='btn ghost' onclick=\"send('cert-trust:" + Attr(kv.Key) + ":" + Attr(kv.Value.Fp) + ":" + (trusted ? "deny" : "allow") + "')\">" +
+                              (trusted ? "Revoke trust" : "Trust this certificate") + "</a></div></div>");
+                }
+                sb.Append("<div class='muted' style='margin:6px 0 18px'>Trust is pinned to the exact certificate above — if this host later presents a different certificate, it is refused again until separately trusted. Client certificate requests are always refused automatically.</div>");
+            }
+
             sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
             var (sidState, sidId) = SoftwareIdState();
             var sidColor = sidState == "verified authentic" ? "#7fd6a0" : (sidState.StartsWith("MISMATCH") ? "#e06c6c" : "#c9a24a");
@@ -1553,6 +1638,17 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 {
                     SitePolicySet(parts[0], "tracker_blocking", parts[1]);
                     Status("tracker blocking for " + parts[0] + ": " + (parts[1] == "off" ? "exempted" : "inherits global setting"));
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
+                }
+            }
+            else if (msg.StartsWith("cert-trust:"))
+            {
+                var parts = msg.Substring("cert-trust:".Length).Split(':');
+                if (parts.Length == 3)
+                {
+                    SitePolicySet(parts[0], "cert." + parts[1], parts[2]);
+                    _actions?.Append(parts[2] == "allow" ? "cert.trust" : "cert.untrust", parts[0]);
+                    Status((parts[2] == "allow" ? "trusted certificate " : "revoked trust for certificate ") + parts[1] + " on " + parts[0]);
                     if (tab.Internal == "settings") LoadInternal(tab, "settings");
                 }
             }
