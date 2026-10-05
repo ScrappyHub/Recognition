@@ -544,18 +544,27 @@ document.addEventListener('keydown',function(e){
             catch { try { e.Action = CoreWebView2ServerCertificateErrorAction.Cancel; } catch { } }
         }
 
-        // Fingerprint = SHA-256(subject|issuer|validFrom|validTo), first 16 hex chars.
-        // This pins on certificate METADATA, not a full DER-byte hash (a higher-confidence
-        // WebView2 API to pull raw certificate bytes was not available to verify safely
-        // without running the SDK directly) — any change to subject, issuer, or validity
-        // window breaks the pin and falls back to the fail-closed default, which covers
-        // the realistic "cert got swapped/renewed" cases this is meant to catch.
+        // Fingerprint = "der:" + SHA-256 of the certificate's raw DER bytes (via the documented
+        // CoreWebView2Certificate.ToX509Certificate2().RawData). This is full-certificate pinning:
+        // any byte difference — including a different public key behind identical subject/issuer/
+        // validity — yields a different fingerprint and is refused again. If the DER bytes cannot
+        // be obtained for any reason it falls back to a SUBJECT|ISSUER|VALIDITY metadata
+        // fingerprint ("meta:" prefix, so the two never collide), which is weaker but still
+        // fail-closed against renewed/swapped certificates.
         private static string CertFingerprint(CoreWebView2Certificate? cert)
         {
-            var s = (cert?.Subject ?? "") + "|" + (cert?.Issuer ?? "") + "|" +
-                    (cert != null ? cert.ValidFrom.ToString("o") : "") + "|" +
-                    (cert != null ? cert.ValidTo.ToString("o") : "");
-            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s))).ToLowerInvariant().Substring(0, 16);
+            // NOTE: separators are '-' (not ':' or '|') because the fingerprint travels inside
+            // "cert-trust:host:fp:value" web messages and "site_policy.set|key|origin|value" records.
+            if (cert == null) return "meta-" + Convert.ToHexString(SHA256.HashData(Array.Empty<byte>())).ToLowerInvariant();
+            try
+            {
+                using var x = cert.ToX509Certificate2();
+                if (x != null && x.RawData != null && x.RawData.Length > 0)
+                    return "der-" + Convert.ToHexString(SHA256.HashData(x.RawData)).ToLowerInvariant();
+            }
+            catch { }
+            var s = (cert.Subject ?? "") + "|" + (cert.Issuer ?? "") + "|" + cert.ValidFrom.ToString("o") + "|" + cert.ValidTo.ToString("o");
+            return "meta-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s))).ToLowerInvariant();
         }
 
         // Mutual-TLS client certificate requests are ALWAYS refused — Recognition never

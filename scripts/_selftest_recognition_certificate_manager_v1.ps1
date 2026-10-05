@@ -43,8 +43,18 @@ function JJ([string]$s){ '"' + ([string]$s).Replace('\','\\').Replace('"','\"') 
 
 # Mirrors C# CertFingerprint exactly: sha256hex(subject|issuer|validFrom_o|validTo_o), first 16 hex chars.
 function CertFingerprint([string]$subject,[string]$issuer,[string]$validFrom,[string]$validTo){
+  # metadata FALLBACK fingerprint (used by the browser only if DER bytes can't be obtained)
   $s = $subject + "|" + $issuer + "|" + $validFrom + "|" + $validTo
-  (Sha256Hex $s).Substring(0,16)
+  "meta-" + (Sha256Hex $s)
+}
+# Mirrors the browser's PRIMARY fingerprint: "der-" + SHA-256(raw DER bytes of the certificate).
+function DerFingerprint([System.Security.Cryptography.X509Certificates.X509Certificate2]$cert){
+  "der-" + (-join ([System.Security.Cryptography.SHA256]::HashData($cert.RawData) | ForEach-Object { $_.ToString("x2") }))
+}
+function NewSelfSigned([string]$subject,[datetime]$nb,[datetime]$na){
+  $key = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve]::CreateFromFriendlyName("nistP256"))
+  $req = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest($subject, $key, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+  $req.CreateSelfSigned([System.DateTimeOffset]$nb, [System.DateTimeOffset]$na)
 }
 
 function New-Receipt([int]$seq,[string]$ts,[string]$action,[string]$detail,[string]$prev){
@@ -101,7 +111,23 @@ try {
   $fpB  = CertFingerprint "CN=bank.example" "CN=Example CA" "2026-06-01T00:00:00.000Z" "2027-06-01T00:00:00.000Z"   # same subject/issuer, different validity (e.g. renewed/substituted cert)
   Check ($fpA -eq $fpA2) "fingerprint is deterministic for identical certificate metadata"
   Check ($fpA -ne $fpB) "fingerprint changes when only the validity window differs (catches a substituted certificate)"
-  Check ($fpA.Length -eq 16) "fingerprint is the expected 16 hex chars"
+  Check ($fpA -match '^meta-[0-9a-f]{64}$') "metadata fallback fingerprint has the expected 'meta-' + 64 hex form"
+
+  # --- DER pinning: the gap the metadata fingerprint could not close ---
+  $nb = [datetime]::new(2026,1,1,0,0,0,[System.DateTimeKind]::Utc); $na = [datetime]::new(2027,1,1,0,0,0,[System.DateTimeKind]::Utc)
+  $c1 = NewSelfSigned "CN=bank.example" $nb $na
+  $c2 = NewSelfSigned "CN=bank.example" $nb $na      # SAME subject, issuer (self) and validity, DIFFERENT key
+  Check ($c1.Subject -eq $c2.Subject -and $c1.Issuer -eq $c2.Issuer -and $c1.NotBefore -eq $c2.NotBefore -and $c1.NotAfter -eq $c2.NotAfter) "forged lookalike has identical subject/issuer/validity metadata"
+  $mfp1 = CertFingerprint $c1.Subject $c1.Issuer $c1.NotBefore.ToString("o") $c1.NotAfter.ToString("o")
+  $mfp2 = CertFingerprint $c2.Subject $c2.Issuer $c2.NotBefore.ToString("o") $c2.NotAfter.ToString("o")
+  Check ($mfp1 -eq $mfp2) "metadata fingerprint CANNOT tell the lookalike apart (the documented weakness)"
+  $d1 = DerFingerprint $c1; $d2 = DerFingerprint $c2; $d1b = DerFingerprint $c1
+  Check ($d1 -match '^der-[0-9a-f]{64}$') "DER fingerprint has the expected 'der-' + 64 hex form"
+  Check ($d1 -eq $d1b) "DER fingerprint is deterministic for the same certificate"
+  Check ($d1 -ne $d2) "SECURITY: DER fingerprint DOES distinguish a same-metadata, different-key lookalike"
+  Check ($d1 -ne $mfp1) "der- and meta- fingerprints can never collide (distinct prefixes)"
+  Check (($d1 + $mfp1) -notmatch '[:|]') "fingerprints contain no ':' or '|' (safe inside web messages and ledger records)"
+  $c1.Dispose(); $c2.Dispose()
 
   # --- build a ledger: explicitly trust fpA for bank.example ---
   $chain = Join-Path $TempRoot "site_policy.v1.ndjson"
@@ -130,6 +156,8 @@ try {
   $src = Get-Content -Raw -LiteralPath $srcPath
   $m = [regex]::Match($src, 'private void OnClientCertificateRequested\(.*?\)\s*\{(?<body>.*?)\n        \}', 'Singleline')
   Check $m.Success "OnClientCertificateRequested method located in shipped source"
+  $fpm = [regex]::Match($src, 'private static string CertFingerprint\(.*?\n        \}\n', 'Singleline')
+  Check ($fpm.Success -and $fpm.Value -match 'ToX509Certificate2' -and $fpm.Value -match 'RawData' -and $fpm.Value -match '"der-"') "shipped CertFingerprint pins on SHA-256 of the raw DER bytes (ToX509Certificate2().RawData)"
   if($m.Success){
     $body = $m.Groups["body"].Value
     Check ($body -match 'Cancel\s*=\s*true') "OnClientCertificateRequested sets Cancel = true"
