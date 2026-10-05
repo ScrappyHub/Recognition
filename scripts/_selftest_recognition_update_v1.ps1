@@ -136,6 +136,20 @@ try {
   # --- after rollback the same package applies cleanly (no lingering state) ---
   $rb = RU-Apply $pkg120 $install $trust
   Check ($rb.ok -and (RU-GetInstalledVersion $install) -eq [version]"1.2.0") "same package applies cleanly once the lock is gone"
+
+  # --- static checks on the shipped browser UI (no .NET runtime here): it must stay a thin, explicit wrapper ---
+  $srcPath = Join-Path $PSScriptRoot "..\browser\MainWindow.xaml.cs"
+  if(Test-Path -LiteralPath $srcPath -PathType Leaf){
+    $src = Get-Content -Raw -LiteralPath $srcPath
+    $m = [regex]::Match($src, 'private async void UpdateFlow\(.*?\n        \}\n', 'Singleline')
+    Check $m.Success "UpdateFlow located in the browser source"
+    if($m.Success){
+      $body = $m.Groups[0].Value
+      $iVerify = $body.IndexOf('RunUpdater("verify"'); $iConfirm = $body.IndexOf('MessageBoxButton.YesNo'); $iApply = $body.IndexOf('RunUpdater("apply"')
+      Check ($iVerify -ge 0 -and $iConfirm -gt $iVerify -and $iApply -gt $iConfirm) "apply path is ordered verify -> explicit user confirmation -> apply (never silent)"
+      Check ($body -notmatch 'HttpClient|WebClient|DownloadFile|WebRequest') "updater UI performs no network I/O (no auto-check / auto-download)"
+    }
+  } else { Check $false "browser source found for static verification" }
 }
 catch {
   Write-Host ""; Write-Host ("SELFTEST_ERROR: " + $_.Exception.Message) -ForegroundColor Red

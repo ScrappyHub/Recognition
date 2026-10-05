@@ -1013,6 +1013,81 @@ document.addEventListener('keydown',function(e){
             catch (Exception ex) { return (false, "", "governance check error: " + ex.Message); }
         }
 
+        // ---- governed updater UI (§54) -------------------------------------------
+        // All security logic lives in the already-selftested recognition_update_v1.ps1 (signature vs
+        // the pinned trust root, per-file hashes, no unlisted/unsafe paths, strictly-newer version,
+        // backup + auto-rollback). The browser only picks a package folder, shells out, and shows the
+        // verdict. APPLY always runs the full verification first (inside the script) and additionally
+        // requires an explicit user confirmation here; nothing is ever downloaded or applied silently.
+        private string InstalledVersion()
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(_repoRoot, "config", "version.v1.json")));
+                return doc.RootElement.TryGetProperty("version", out var v) ? (v.GetString() ?? "unknown") : "unknown";
+            }
+            catch { return "unknown"; }
+        }
+
+        private (bool ok, string text) RunUpdater(string action, string pkgDir)
+        {
+            try
+            {
+                var script = Path.Combine(_repoRoot, "scripts", "recognition_update_v1.ps1");
+                if (!File.Exists(script)) return (false, "updater script not found");
+                var psi = new ProcessStartInfo("pwsh.exe",
+                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\" -Action {action} -PackageDir \"{pkgDir}\"")
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+                var p = Process.Start(psi);
+                if (p == null) return (false, "could not start pwsh");
+                var outp = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                var token = action == "apply" ? "RECOGNITION_UPDATE_V1_APPLY_OK" : "RECOGNITION_UPDATE_V1_VERIFY_OK";
+                if (outp.Contains(token))
+                    return (true, (outp.Split('\n').FirstOrDefault(l => l.StartsWith("Update ") || l.StartsWith("Applied update")) ?? "ok").Trim());
+                var why = outp.Split('\n').FirstOrDefault(l => l.StartsWith("REFUSED"))?.Trim();
+                return (false, string.IsNullOrEmpty(why) ? "refused (see script output)" : why);
+            }
+            catch (Exception ex) { return (false, "updater error: " + ex.Message); }
+        }
+
+        private async void UpdateFlow(BrowserTab tab, bool apply)
+        {
+            try
+            {
+                var dlg = new Microsoft.Win32.OpenFolderDialog { Title = apply ? "Choose the update package folder to APPLY" : "Choose the update package folder to verify" };
+                if (dlg.ShowDialog(this) != true || string.IsNullOrWhiteSpace(dlg.FolderName)) return;
+                var dir = dlg.FolderName;
+                Status("verifying update package…");
+                var v = await Task.Run(() => RunUpdater("verify", dir));
+                if (!v.ok)
+                {
+                    _actions?.Append("update.refused", dir);
+                    Status("update refused: " + v.text);
+                    MessageBox.Show(this, "This update package was REFUSED and nothing was changed.\n\n" + v.text, "Recognition — Update", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                if (!apply)
+                {
+                    _actions?.Append("update.verified", dir);
+                    Status("update package verified: " + v.text);
+                    MessageBox.Show(this, "Package is authentic, intact, and newer than the installed version.\n\n" + v.text + "\n\nNothing was changed. Use \"Apply update\" to install it.", "Recognition — Update", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var ok = MessageBox.Show(this, "Verified: " + v.text + "\n\nApply this update now? Replaced files are backed up and the install is rolled back automatically if anything fails. Restart Recognition afterwards.",
+                    "Recognition — Apply update", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (ok != MessageBoxResult.Yes) { Status("update not applied (cancelled)"); return; }
+                Status("applying update…");
+                var a = await Task.Run(() => RunUpdater("apply", dir));
+                _actions?.Append(a.ok ? "update.applied" : "update.refused", dir);
+                Status(a.ok ? "update applied — restart Recognition to use it" : "update NOT applied: " + a.text);
+                MessageBox.Show(this, a.ok ? a.text + "\n\nRestart Recognition to use the new version." : "Update was NOT applied (any partial change was rolled back).\n\n" + a.text,
+                    "Recognition — Update", MessageBoxButton.OK, a.ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            }
+            catch (Exception ex) { Status("update error: " + ex.Message); }
+            finally { if (tab.Internal == "settings") LoadInternal(tab, "settings"); }
+        }
+
         // ---- keyboard shortcuts -------------------------------------------------
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -1530,6 +1605,13 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 sb.Append("<div class='muted' style='margin:6px 0 18px'>Trust is pinned to the exact certificate above — if this host later presents a different certificate, it is refused again until separately trusted. Client certificate requests are always refused automatically.</div>");
             }
 
+            sb.Append("<h1 style='font-size:16px'>Updates (governed updater, &sect;54)</h1>");
+            sb.Append("<div class='kv'><div class='k'>Installed version</div><div class='v'>" + Esc(InstalledVersion()) + "</div></div>");
+            sb.Append("<div class='muted' style='margin:6px 0 10px'>Recognition never checks for or downloads updates on its own. Choose an update package folder you obtained yourself: it is applied only if its signature verifies against the pinned trust root, every file hash matches, no path escapes the install or touches <code>runtime\\</code> / the trust root, and the version is strictly newer (no downgrade). Replaced files are backed up and rolled back automatically on any failure.</div>");
+            sb.Append("<div style='margin:0 0 18px;display:flex;gap:10px;flex-wrap:wrap'>" +
+                      "<a class='btn ghost' onclick=\"send('update-verify')\">Verify an update package…</a>" +
+                      "<a class='btn' onclick=\"send('update-apply')\">Apply an update package…</a></div>");
+
             sb.Append("<h1 style='font-size:16px'>Software integrity</h1>");
             var (sidState, sidId) = SoftwareIdState();
             var sidColor = sidState == "verified authentic" ? "#7fd6a0" : (sidState.StartsWith("MISMATCH") ? "#e06c6c" : "#c9a24a");
@@ -1613,6 +1695,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 case "vpn-off": SetVpnOff(); break;
                 case "vpn-optimize": Status("probing endpoints for best placement…"); _ = OptimizeVpnAsync(tab); break;
                 case "vpn-apply": RestartToApply(); break;
+                case "update-verify": UpdateFlow(tab, false); break;
+                case "update-apply": UpdateFlow(tab, true); break;
                 case "cookies-clear-all": ClearAllCookies(); if (tab.Internal == "settings") LoadInternal(tab, "settings"); break;
                 case "cookies-clear-site": ClearSiteCookies(); if (tab.Internal == "settings") LoadInternal(tab, "settings"); break;
             }
