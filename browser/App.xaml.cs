@@ -28,7 +28,16 @@ namespace Recognition.Browser
         {
             var url = LaunchArgs.FromArgs(e.Args, File.Exists);
             var id = InstanceId();
-            try { _mutex = new Mutex(true, "Local\\RecognitionBrowser_" + id, out bool first); if (!first) { SendToRunning(id, url ?? ""); Shutdown(); return; } }
+            try
+            {
+                _mutex = new Mutex(true, "Local\\RecognitionBrowser_" + id, out bool first);
+                // "Restart to apply" starts the new copy while the old one is still closing: wait for it instead of handing it the address
+                if (!first && Array.IndexOf(e.Args, "--restart") >= 0)
+                {
+                    try { first = _mutex.WaitOne(12000); } catch (AbandonedMutexException) { first = true; }
+                }
+                if (!first) { SendToRunning(id, url ?? ""); Shutdown(); return; }
+            }
             catch { /* no mutex: run anyway, never block the browser from starting */ }
 
             if (url != null) PendingUrls.Enqueue(url);

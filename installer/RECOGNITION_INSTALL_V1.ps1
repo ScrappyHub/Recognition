@@ -31,18 +31,25 @@ if(-not (Test-Path -LiteralPath $exeSrc)){
   Die ("could not find browser\RecognitionBrowser.exe under: " + $Source + " — run this from an extracted distribution.")
 }
 
+if((Resolve-Path -LiteralPath $InstallDir -ErrorAction SilentlyContinue) -and ((Resolve-Path -LiteralPath $InstallDir).Path.TrimEnd("\") -eq $Source.TrimEnd("\"))){ Die "run the installer from the extracted distribution (dist\recognition), not from the installed folder" }
 Write-Host ("Installing Recognition") -ForegroundColor Cyan
 Write-Host ("  from: " + $Source)
 Write-Host ("  to  : " + $InstallDir)
 
 # --- stop any running instance ----------------------------------------------
 Get-Process -Name "RecognitionBrowser" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 400
+Start-Sleep -Milliseconds 1500
 
 # --- copy files (preserve user data if reinstalling) ------------------------
 if(-not (Test-Path -LiteralPath $InstallDir)){ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null }
-# copy everything except volatile per-user state (kept across reinstalls)
+# per-user state that survives a reinstall
 $exclude = @("runtime","packets","payload","dist",".git")
+# Remove the previous program files first. (Copying a folder onto an existing folder with Copy-Item -Recurse nests it inside
+# instead of replacing it, which silently left the old program in place on every reinstall.)
+Get-ChildItem -LiteralPath $InstallDir -Force | ForEach-Object {
+  if($exclude -contains $_.Name){ return }
+  Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+}
 Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
   if($exclude -contains $_.Name){ return }
   Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $InstallDir $_.Name) -Recurse -Force
@@ -50,6 +57,11 @@ Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
 
 $exe = Join-Path $InstallDir "browser\RecognitionBrowser.exe"
 if(-not (Test-Path -LiteralPath $exe)){ Die "copy failed: exe not present after install" }
+# the installed program must be byte-identical to the one in the distribution
+$hSrc = (Get-FileHash -LiteralPath $exeSrc -Algorithm SHA256).Hash
+$hDst = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+if($hSrc -ne $hDst){ Die ("installed program differs from the distribution (source " + $hSrc.Substring(0,12) + ", installed " + $hDst.Substring(0,12) + ")") }
+Write-Host ("  verified: installed RecognitionBrowser.exe matches the distribution (sha256 " + $hSrc.Substring(0,12) + ")")
 
 # --- shortcuts (Start Menu + Desktop), icon from the exe --------------------
 if(-not $NoShortcuts){

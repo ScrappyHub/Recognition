@@ -71,7 +71,7 @@ namespace Recognition.Browser
         private string _netExitCheckUrl = "";
         private bool _netAutoOptimize;
         private bool _netProxyDown;   // configured exit is unreachable this session (run direct, warn)
-        private sealed class NetEndpoint { public string Name = ""; public string Region = ""; public string Proxy = ""; }
+        private sealed class NetEndpoint { public string Name = ""; public string Region = ""; public string Proxy = ""; public bool User; }
         private readonly List<NetEndpoint> _netEndpoints = new();
 
         // Home page (config: browser_settings.json home_url)
@@ -504,6 +504,8 @@ document.addEventListener('keydown',function(e){
             "passkeys" => "Passkeys",
             "extensions" => "Extensions",
             "soteria" => "SoteriaVault",
+            "export" => "Session export",
+            "vpn" => "VPN / proxy",
             _ => "Recognition"
         };
 
@@ -781,8 +783,7 @@ document.addEventListener('keydown',function(e){
             {
                 VpnBtn.Content = "\U0001F310 !";
                 VpnBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xB4, 0x4C)); // amber
-                VpnBtn.ToolTip = "VPN exit unreachable (" + (_netExitRegion ?? "") + ") — running DIRECT this session. "
-                               + "Fix the exit host in Network settings, or pick another exit, then Apply (restart).";
+                VpnBtn.ToolTip = "The chosen exit (" + (_netExitRegion ?? "") + ") could not be reached — running DIRECT this session. Click to fix it.";
             }
             else
             {
@@ -790,45 +791,12 @@ document.addEventListener('keydown',function(e){
                 VpnBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0x6F, 0xCF, 0x97) : Color.FromRgb(0x8B, 0x90, 0x9A));
                 VpnBtn.ToolTip = on
                     ? ("VPN ON — " + _netMode + (string.IsNullOrEmpty(_netExitRegion) ? "" : " · " + _netExitRegion) + "  (click for settings)")
-                    : "VPN OFF — click to configure";
+                    : "No VPN or proxy in use (direct connection) — click to set one up";
             }
         }
-        private void Vpn_Click(object sender, RoutedEventArgs e)
-        {
-            var cm = new ContextMenu();
-            var off = new MenuItem { Header = "Off (direct connection)", IsChecked = !NetActive() };
-            off.Click += (_, __) => SetVpnOff();
-            cm.Items.Add(off);
-            if (_netEndpoints.Count > 0)
-            {
-                cm.Items.Add(new Separator());
-                foreach (var ep in _netEndpoints)
-                {
-                    var label = string.IsNullOrEmpty(ep.Region) ? ep.Name : ep.Region;
-                    var mi = new MenuItem { Header = label, IsChecked = (_netMode == "proxy" && _netProxy == ep.Proxy) };
-                    var epc = ep;
-                    mi.Click += (_, __) => { _ = SetVpnEndpoint(epc); };
-                    cm.Items.Add(mi);
-                }
-                cm.Items.Add(new Separator());
-                var opt = new MenuItem { Header = "Auto-optimize (best placement)" };
-                opt.Click += (_, __) => { var a = Active; if (a != null) _ = OptimizeVpnAsync(a); };
-                cm.Items.Add(opt);
-            }
-            cm.Items.Add(new Separator());
-            var netPanel = new MenuItem { Header = "Network panel (connection, ping, speed, saved networks)…" };
-            netPanel.Click += (_, __) => OpenInternalInActiveTab("network");
-            cm.Items.Add(netPanel);
-            var apply = new MenuItem { Header = "Apply changes now (restart)" };
-            apply.Click += (_, __) => RestartToApply();
-            cm.Items.Add(apply);
-            var settings = new MenuItem { Header = "Network settings…" };
-            settings.Click += (_, __) => OpenInternalInActiveTab("settings");
-            cm.Items.Add(settings);
-            cm.PlacementTarget = VpnBtn;
-            cm.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
-            cm.IsOpen = true;
-        }
+        // The toolbar button opens the VPN / proxy page, where every action says what happened. (It used to open a menu whose choices
+        // reported their result only in the status bar.)
+        private void Vpn_Click(object sender, RoutedEventArgs e) => OpenInternalInActiveTab("vpn");
 
         private void SetVpnOff()
         {
@@ -868,7 +836,7 @@ document.addEventListener('keydown',function(e){
                 if (string.IsNullOrEmpty(exe)) { Status("cannot locate the executable to restart"); return; }
                 // cmd.exe is always present (the previous version needed PowerShell 7 on the machine). It waits for this
                 // process to release the profile, then starts a fresh instance that reads the new configuration.
-                var args = "/c ping -n 4 127.0.0.1 >nul & start \"\" \"" + exe + "\"";
+                var args = "/c ping -n 3 127.0.0.1 >nul & start \"\" \"" + exe + "\" --restart";
                 Process.Start(new ProcessStartInfo("cmd.exe", args) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
                 Application.Current.Shutdown();
             }
@@ -911,24 +879,47 @@ document.addEventListener('keydown',function(e){
             catch { }
         }
 
-        // ---- governed network / VPN (config/network.v1.json) --------------------
+        // ---- governed network / VPN -------------------------------------------------------------------------------
+        // config\network.v1.json ships with the program (no exits except Tor on this computer, mode off). What you choose and the exits
+        // you add are kept in runtime\network_user.v1.json, which survives updates and reinstalls.
+        private string NetUserPath() => Path.Combine(_repoRoot, "runtime", "network_user.v1.json");
         private void LoadNetworkConfig()
         {
             try
             {
                 var p = Path.Combine(_repoRoot, "config", "network.v1.json");
-                if (!File.Exists(p)) return;
-                using var doc = JsonDocument.Parse(File.ReadAllText(p));
-                var r = doc.RootElement;
-                _netMode        = Get(r, "mode"); if (string.IsNullOrEmpty(_netMode)) _netMode = "off";
-                _netProxy       = Get(r, "proxy");
-                _netExitRegion  = Get(r, "exit_region");
-                _netExitCheckUrl = Get(r, "exit_check_url");
-                _netAutoOptimize = r.TryGetProperty("auto_optimize", out var ao) && ao.ValueKind == JsonValueKind.True;
-                _netEndpoints.Clear();
-                if (r.TryGetProperty("endpoints", out var eps) && eps.ValueKind == JsonValueKind.Array)
-                    foreach (var ep in eps.EnumerateArray())
-                        _netEndpoints.Add(new NetEndpoint { Name = Get(ep, "name"), Region = Get(ep, "region"), Proxy = Get(ep, "proxy") });
+                if (File.Exists(p))
+                {
+                    using var doc = JsonDocument.Parse(File.ReadAllText(p));
+                    var r = doc.RootElement;
+                    _netMode        = Get(r, "mode"); if (string.IsNullOrEmpty(_netMode)) _netMode = "off";
+                    _netProxy       = Get(r, "proxy");
+                    _netExitRegion  = Get(r, "exit_region");
+                    _netExitCheckUrl = Get(r, "exit_check_url");
+                    _netAutoOptimize = r.TryGetProperty("auto_optimize", out var ao) && ao.ValueKind == JsonValueKind.True;
+                    _netEndpoints.Clear();
+                    if (r.TryGetProperty("endpoints", out var eps) && eps.ValueKind == JsonValueKind.Array)
+                        foreach (var ep in eps.EnumerateArray())
+                            _netEndpoints.Add(new NetEndpoint { Name = Get(ep, "name"), Region = Get(ep, "region"), Proxy = Get(ep, "proxy") });
+                }
+                var up = NetUserPath();
+                if (File.Exists(up))
+                {
+                    using var ud = JsonDocument.Parse(File.ReadAllText(up));
+                    var u = ud.RootElement;
+                    var mode = Get(u, "mode"); if (mode is "off" or "proxy") _netMode = mode;
+                    _netProxy = Get(u, "proxy"); _netExitRegion = Get(u, "exit_region");
+                    if (u.TryGetProperty("auto_optimize", out var uao)) _netAutoOptimize = uao.ValueKind == JsonValueKind.True;
+                    if (u.TryGetProperty("endpoints", out var ueps) && ueps.ValueKind == JsonValueKind.Array)
+                        foreach (var ep in ueps.EnumerateArray().Take(ProxyRules.MaxExits))
+                        {
+                            var name = ProxyRules.CleanName(Get(ep, "name")); var proxy = Get(ep, "proxy");
+                            var (h, pt) = ParseHostPort(proxy);
+                            if (name.Length == 0 || h == null || !NetParsers.IsSafeHost(h) || pt < 1 || pt > 65535) continue;   // a damaged or hand-edited entry is skipped
+                            if (_netEndpoints.Any(x => x.Name == name)) continue;
+                            _netEndpoints.Add(new NetEndpoint { Name = name, Region = ProxyRules.CleanName(Get(ep, "region")), Proxy = proxy, User = true });
+                        }
+                }
             }
             catch { }
         }
@@ -937,17 +928,19 @@ document.addEventListener('keydown',function(e){
         {
             try
             {
-                var sb = new StringBuilder("{" + J("schema") + ":" + J("recognition.network.v1") + "," +
+                var sb = new StringBuilder("{" + J("schema") + ":" + J("recognition.network_user.v1") + "," +
                     J("mode") + ":" + J(_netMode) + "," + J("proxy") + ":" + J(_netProxy) + "," +
-                    J("exit_region") + ":" + J(_netExitRegion) + "," + J("exit_check_url") + ":" + J(_netExitCheckUrl) + "," +
+                    J("exit_region") + ":" + J(_netExitRegion) + "," +
                     J("auto_optimize") + ":" + (_netAutoOptimize ? "true" : "false") + "," + J("endpoints") + ":[");
-                for (int i = 0; i < _netEndpoints.Count; i++)
+                bool first = true;
+                foreach (var ep in _netEndpoints)
                 {
-                    var ep = _netEndpoints[i]; if (i > 0) sb.Append(",");
+                    if (!ep.User) continue;
+                    if (!first) sb.Append(","); first = false;
                     sb.Append("{" + J("name") + ":" + J(ep.Name) + "," + J("region") + ":" + J(ep.Region) + "," + J("proxy") + ":" + J(ep.Proxy) + "}");
                 }
                 sb.Append("]}");
-                var p = Path.Combine(_repoRoot, "config", "network.v1.json");
+                var p = NetUserPath();
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
                 File.WriteAllText(p, sb.ToString() + "\n", new UTF8Encoding(false));
             }
@@ -1338,6 +1331,8 @@ document.addEventListener('keydown',function(e){
                 "passkeys"  => PasskeysHtml(),
                 "extensions" => ExtensionsHtml(),
                 "soteria"   => SoteriaHtml(),
+                "export"    => ExportHtml(),
+                "vpn"       => VpnHtml(),
                 "viewer"    => ViewerReloadHtml(tab),
                 _         => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
@@ -1602,7 +1597,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (_netEndpoints.Count > 0)
                 sb.Append("<div style='margin:10px 0 6px'><a class='btn' onclick=\"send('vpn-optimize')\">Auto-optimize (best placement)</a></div>");
             else
-                sb.Append("<div class='muted'>Add exit endpoints to <code>config\\network.v1.json</code> (name / region / proxy, e.g. <code>socks5://host:1080</code>) to choose one or auto-optimize. Recognition runs no exit servers &mdash; bring your own (self-hosted, a provider proxy, WireGuard, or Tor).</div>");
+                sb.Append("<div class='muted'>Add and manage exits on the <a class='t' href='recognition:vpn'>VPN / proxy page</a>. Recognition runs no exit servers &mdash; bring your own (a provider proxy, your own server, or Tor).</div>");
             sb.Append("<div style='margin:8px 0 6px'><a class='btn' onclick=\"send('vpn-apply')\">Apply changes now (restart)</a></div>");
             sb.Append("<div class='muted' style='margin:6px 0 6px'>Routing changes apply on next launch (the engine proxy is set at startup) &mdash; use <b>Apply changes now</b> to restart immediately. Egress: HTTPS-first, trackers/ads blocked, no telemetry &mdash; all requests user-initiated. Recognition runs no exit servers; every exit above is one you bring (self-hosted, a provider proxy, WireGuard, or Tor).</div>");
             if (!string.IsNullOrWhiteSpace(_netExitCheckUrl))
@@ -1611,6 +1606,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<h1 style='font-size:16px'>Web engine</h1>");
             sb.Append(EngineHtmlRow());
             sb.Append(DefaultBrowserHtmlRow());
+            sb.Append("<div class='row'><div><div class='t'>Tools</div><div class='u'>PDF page tools (merge, split, rotate, reorder), image tools, full-page screenshots, save as PDF, view source. Also under Menu &rarr; Tools. Translate and widgets are not built.</div></div><div class='ts'><a class='btn' href='recognition:tools'>Open Tools</a> <a class='btn ghost' href='recognition:vpn'>VPN / proxy</a> <a class='btn ghost' href='recognition:export'>Last export</a></div></div>");
             sb.Append("<h1 style='font-size:16px'>Extensions</h1>");
             sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + (_extPaths.Count + _extState.Items.Count) + " configured") : "off") + " &middot; <a class='t' href='recognition:extensions'>manage extensions</a>" + "</div></div>");
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Configured in <code>config\\extensions.v1.json</code>: an unpacked folder, a <code>.zip</code>, or a <code>.crx</code> (universal adapter — all three are normalized to an unpacked folder). Every extension must ALSO pass the governance load gate (<code>recognition_extension_governance_v1.ps1</code>): its current bytes are hashed and checked against a ledger decision an operator recorded explicitly via <code>-Action register</code>. Nothing loads on first sight, on a tamper, or on a review/deny decision &mdash; refusals are receipted like any other action.</div>");
@@ -1852,6 +1848,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             else if (msg.StartsWith("pk-") && tab.Internal == "passkeys") HandlePasskeyMessage(msg);
             else if (msg.StartsWith("ext-") && tab.Internal == "extensions") HandleExtMessage(msg);
             else if (msg.StartsWith("sv-") && tab.Internal == "soteria") HandleSoteriaMessage(msg);
+            else if (msg.StartsWith("exp-") && tab.Internal == "export") HandleExportMessage(msg);
+            else if (msg.StartsWith("exit-") && tab.Internal == "vpn") HandleVpnMessage(msg);
             else if (msg.StartsWith("appearance-set:"))
             {
                 var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);
@@ -2131,7 +2129,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
             {
                 var name = input.Substring("recognition:".Length).ToLowerInvariant();
-                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "shield" or "passkeys" or "extensions" or "soteria" or "start" ? name : "start");
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "shield" or "passkeys" or "extensions" or "soteria" or "vpn" or "export" or "start" ? name : "start");
                 return;
             }
             tab.Internal = "";
@@ -2323,27 +2321,9 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                           J("head_hash") + ":" + J(_sitePolicy.Head) + "}");
 
                 var script = Path.Combine(_repoRoot, "scripts", "recognition_export_session_packet_v1.ps1");
-                var psi = new ProcessStartInfo("powershell.exe",
-                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\"")
-                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-                var p = Process.Start(psi)!;
-                string outp = p.StandardOutput.ReadToEnd(); string err = p.StandardError.ReadToEnd(); p.WaitForExit();
-
-                var m = Regex.Match(outp, @"EXPORT_OK:\s*(?<d>.+)");
-                if (m.Success)
-                {
-                    var pkt = m.Groups["d"].Value.Trim();
-                    _actions?.Append("session.export", pkt);
-                    Status("Exported governed packet: " + Path.GetFileName(pkt));
-                    MessageBox.Show(this, "Session exported as a governed evidence packet:\n\n" + pkt,
-                        "Recognition — Export", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
-                else
-                {
-                    Status("Export failed");
-                    MessageBox.Show(this, "Export failed.\n\nSTDOUT:\n" + outp + "\n\nSTDERR:\n" + err,
-                        "Recognition — Export", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
+                var summary = new ExportSummary { Utc = DateTime.UtcNow, Tabs = _tabs.Count, Visits = total, Blocked = _blockedSession, ActionsOk = actOk, CookiesOk = cookChainOk, PolicyOk = spChainOk };
+                Status("exporting session…");
+                _ = FinishExportAsync(script, summary);   // the packet is written off the UI thread; the result opens as a page
             }
             catch (Exception ex) { Status("export error: " + ex.Message); }
         }

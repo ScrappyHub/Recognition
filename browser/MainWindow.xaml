@@ -96,6 +96,8 @@
               <MenuItem Header="Zoom out"   Click="MenuZoomOut_Click" InputGestureText="Ctrl+-"/>
               <MenuItem Header="Reset zoom" Click="MenuZoomReset_Click" InputGestureText="Ctrl+0"/>
               <Separator/>
+              <MenuItem Header="Tools (PDF, images, page tools)" Click="MenuTools_Click"/>
+              <MenuItem Header="VPN / proxy" Click="Vpn_Click"/>
               <MenuItem Header="Network"   Click="MenuNetwork_Click"/>
               <MenuItem Header="Passwords" Click="MenuPasswords_Click"/>
               <MenuItem Header="Shield (ads, trackers, fingerprinting)" Click="MenuShield_Click"/>

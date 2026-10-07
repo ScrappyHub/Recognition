@@ -123,3 +123,12 @@ The handoff has no separate DoD; §31's ✓ pattern **is** the definition, gover
   there, this scoreboard reflects the in-repo handoff only.
 - **§31 crypto was upgraded** — the originally-"proven" encrypted profile used
   AES-CBC + PBKDF2-SHA1; it is now AES-256-GCM + SHA-256 with a wrapped master key.
+
+## v1.3.2 additions (unverified until the gate is run on Windows)
+
+| Area | State |
+|---|---|
+| VPN / proxy page (`recognition:vpn`) | Built: add/test/use/remove exits, Tor detection, restart-to-apply (`--restart` waits for the old copy). No VPN servers are shipped; the page says so. Rules in ProxyRules.cs are executed by tests; the page itself needs a manual check (smoke sheet). |
+| Export result page (`recognition:export`) | Built: packet code, QR of the packet fingerprint (QrCode.cs, golden-hash tests, cross-checked with OpenCV), copy, open folder. Needs a manual check. |
+| Tools discoverability | Menu Tools and VPN items, Settings row. Translate and widgets are not built. |
+

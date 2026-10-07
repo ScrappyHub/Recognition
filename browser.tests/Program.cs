@@ -916,6 +916,50 @@ Console.WriteLine("=== Password vault (executed C#) ===");
     Check(LaunchArgs.FromArgs(Enumerable.Repeat("junk", 40).Concat(new[] { "https://late.example/" }).ToArray()) == null, "launch: only the first 16 arguments are looked at");
 }
 
+// ---- QR code encoder: matrices must match the reference implementation exactly (hash of the module grid) ---------------------------
+{
+    string QrHash(string txt, out int qv, out int qm, out int qn)
+    {
+        var g = QrCode.Encode(txt, out qv, out qm); qn = g.GetLength(0);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(QrCode.ToText(g)))).ToLowerInvariant();
+    }
+    var qrPacket = "recognition:packet:v1:bc87ef19a7e5b5fa44f6e918ff2ddab49cccf8997864d9ccd62c005a8c5df366";
+    var qh1 = QrHash("hi", out var qv1, out var qm1, out var qn1);
+    Check(qh1 == "05d7684a6c56e7dc2ecf2c1270f67ba4cc2f3f45ed6935ea9b3cf71ac3a5ef50" && qv1 == 1 && qn1 == 21 && qm1 == 2, "qr: version 1 symbol matches the reference");
+    var qh2 = QrHash(qrPacket, out var qv2, out var qm2, out var qn2);
+    Check(qh2 == "5571d30357fd3bf79869b8010bf6ef7ed33e8921e26f83fb364d9beaee40a0ca" && qv2 == 6 && qn2 == 41 && qm2 == 2, "qr: the packet-fingerprint symbol (version 6) matches the reference");
+    var qh3 = QrHash(new string('A', 213), out var qv3, out var qm3, out var qn3);
+    Check(qh3 == "e8b49c67b8bce64d5bdc3343e6ea0a1846d3fe057a8671da15d3af52044de366" && qv3 == 10 && qn3 == 57 && qm3 == 3, "qr: a full version 10 symbol (multiple blocks, version info) matches the reference");
+    var qh4 = QrHash("Привет €", out var qv4, out var qm4, out var qn4);
+    Check(qh4 == "a37814387e6855fbba63b99fa1e71583ad9002c56784e0c46c31ac83adb78fca" && qv4 == 2 && qn4 == 25, "qr: non-ASCII text is encoded as UTF-8 and matches the reference");
+    bool qrLong = false; try { QrCode.Encode(new string('x', 214), out _, out _); } catch (ArgumentException) { qrLong = true; }
+    Check(qrLong, "qr: more than 213 bytes is refused");
+    var qg = QrCode.Encode("", out var qv5, out _);
+    Check(qv5 == 1 && qg.GetLength(0) == 21, "qr: empty text still produces a valid version 1 symbol");
+    var qpath = QrCode.ToSvgPath(QrCode.Encode("hi", out _, out _));
+    Check(qpath.Length > 100 && qpath.StartsWith("M") && qpath.All(ch => char.IsDigit(ch) || ch is 'M' or 'h' or 'v' or 'z' or '-' or ' '), "qr: the SVG path holds only drawing commands and numbers");
+}
+
+// ---- exits (proxies) typed on the VPN page: validated before they can reach the engine's command line -----------------------------------
+{
+    Check(ProxyRules.TryBuild("socks5", "Proxy.Example.com", "1080", out var pxA, out _) && pxA == "socks5://proxy.example.com:1080", "proxy: a SOCKS5 exit is built, host lower-cased");
+    Check(ProxyRules.TryBuild(" HTTP ", "10.0.0.5", " 8080 ", out var pxB, out _) && pxB == "http://10.0.0.5:8080", "proxy: an HTTP exit on an IPv4 address is built, spaces trimmed");
+    foreach (var (pxT, pxH, pxP) in new[]
+    {
+        ("ftp", "a.example", "21"), ("", "a.example", "1080"), ("socks5", "", "1080"), ("socks5", "a b.example", "1080"), ("socks5", "a.example --no-sandbox", "1080"),
+        ("socks5", "a.example\" --evil=1 \"", "1080"), ("socks5", "a.example/path", "1080"), ("socks5", "user@a.example", "1080"), ("socks5", "-a.example", "1080"),
+        ("socks5", "a.example-", "1080"), ("socks5", "a..example", "1080"), ("socks5", "::1", "1080"), ("socks5", "[::1]", "1080"), ("socks5", new string('a', 254), "1080"),
+        ("socks5", "a.example", "0"), ("socks5", "a.example", "65536"), ("socks5", "a.example", "-1"), ("socks5", "a.example", "10 80"), ("socks5", "a.example", "1e3"), ("socks5", "a.example", ""), ("socks5", "a.example", "99999999999"),
+    })
+        Check(!ProxyRules.TryBuild(pxT, pxH, pxP, out var pxBad, out var pxErr) && pxBad == "" && pxErr.Length > 0, "proxy: refused type='" + pxT + "' host='" + (pxH.Length > 20 ? pxH.Substring(0, 20) : pxH).Replace("\"", "'") + "' port='" + pxP + "'");
+    Check(!ProxyRules.TryBuild(null, null, null, out _, out _), "proxy: nulls are refused");
+    Check(ProxyRules.CleanName("My <b>VPN</b>; rm -rf") == "My bVPNb rm -rf" && ProxyRules.CleanName("   ") == "" && ProxyRules.CleanName(new string('x', 100)).Length == 40, "proxy: names keep letters, digits and a few marks only, 40 characters at most");
+    Check(ProxyRules.Describe("socks5://127.0.0.1:9050") == "SOCKS5 127.0.0.1:9050" && ProxyRules.Describe("weird") == "weird" && ProxyRules.Describe(null) == "", "proxy: described in plain words");
+    Check(ProxyRules.IsLocal("socks5://127.0.0.1:9050") && ProxyRules.IsLocal("http://localhost:8080") && !ProxyRules.IsLocal("socks5://127.0.0.1.evil.com:1") && !ProxyRules.IsLocal("socks5://10.0.0.1:1080") && !ProxyRules.IsLocal(null), "proxy: only 127.0.0.1 and localhost count as on this computer");
+    var pxTaken = new HashSet<string> { "Work", "Work 2" };
+    Check(ProxyRules.UniqueName("Home", n => pxTaken.Contains(n)) == "Home" && ProxyRules.UniqueName("Work", n => pxTaken.Contains(n)) == "Work 3", "proxy: duplicate names get a number");
+}
+
 // ---- stress: the filter engine at real-list scale, adversarial input, and PDF/extension abuse ------------------------------------
 {
     var stSw = System.Diagnostics.Stopwatch.StartNew();
