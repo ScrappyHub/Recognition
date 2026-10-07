@@ -60,6 +60,14 @@ $sb = Get-Content -LiteralPath (Join-Path $bdir "SoteriaBridge.cs") -Raw
 $sw = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Soteria.cs") -Raw
 if($sb -match 'HttpClient|WebClient|WebRequest|TcpClient|UdpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|System\.Text\.RegularExpressions|File\.Write|File\.Delete|Directory\.Delete'){ $bad += "SoteriaBridge.cs must stay pure: no network, processes, writes, deletes or regex" }
 if($sw -match 'HttpClient|WebClient|WebRequest|Process\.Start|ProcessStartInfo|File\.Write|File\.Delete|Directory\.Delete|File\.Copy|File\.Move|PasswordVault|Decrypt|Unprotect'){ $bad += "MainWindow.Soteria.cs may only read the two contract files: no processes, writes, network or secret handling" }
+# Home page, start background, VPN-app hint: pure rules stay pure, the start page makes no web requests.
+$sbg = Get-Content -LiteralPath (Join-Path $bdir "StartBackground.cs") -Raw
+$vdt = Get-Content -LiteralPath (Join-Path $bdir "VpnDetect.cs") -Raw
+$mst = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Start.cs") -Raw
+if($sbg -match 'HttpClient|WebClient|WebRequest|Process\.Start|File\.|Directory\.'){ $bad += "StartBackground.cs must stay pure: no network, processes or files" }
+if($vdt -match 'HttpClient|WebClient|WebRequest|Process\.Start|File\.|Directory\.|NetworkInterface'){ $bad += "VpnDetect.cs must stay pure: no network, processes, files or adapter reads" }
+if($mst -match 'HttpClient|WebClient|WebRequest|Process\.Start|ProcessStartInfo'){ $bad += "MainWindow.Start.cs must not make web requests or start processes" }
+if($sbg -notmatch 'base64,\[A-Za-z0-9\+/=\]\+'){ $bad += "start background pictures must be checked as plain base64 data URLs" }
 if($sb -notmatch 'secret_release_to_external_runtime' -or $sb -notmatch 'hard_runtime_dependency' -or $sb -notmatch 'must_not_fail_if_absent'){ $bad += "the SoteriaVault link must refuse a contract that allows secret release or hard dependencies" }
 if($sw -notmatch 'soteria\.check'){ $bad += "SoteriaVault checks must be receipted (soteria.check)" }
 if($sw -notmatch 'IsSafeRoot'){ $bad += "the SoteriaVault folder must pass SoteriaBridge.IsSafeRoot before use" }

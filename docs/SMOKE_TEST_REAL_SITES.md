@@ -81,3 +81,11 @@ Expected honest result: lower than Brave on list breadth and cosmetic coverage u
 | H5 | Click a web link in another program | Recognition opens it in a new tab; no second window |
 | H6 | Launch Recognition again from the Start menu while it is running | The running window comes forward; no second copy starts |
 | H7 | Double-click a local .html file after choosing Recognition for .html | It opens in a tab |
+
+## I. Home page, background, VPN hint (v1.3.3)
+
+1. Settings, Home page: type `example.com`, Set. Open a new tab (Ctrl+T) and press Home: both load example.com. Use start page restores the start page.
+2. Settings, Start page background: try Aurora, Light, a colour, and Choose a picture. Open a new tab with the start page home: the background shows, text stays readable, and nothing is requested from the web. Remove picture goes back to Default.
+3. With a VPN app connected (any), the toolbar globe says "VPN" in green and the VPN page names the adapter. Disconnect it: both go back to "No VPN".
+4. VPN page, Check my public address opens the address-check page in a new tab (only when pressed).
+

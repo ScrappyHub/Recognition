@@ -20,6 +20,7 @@ namespace Recognition.Browser
 
         private async Task SendVpnSnapshotAsync(string? note = null, bool ok = true)
         {
+            RefreshSysVpn(); UpdateVpn();
             var exits = _netEndpoints.Select(e => new
             {
                 name = e.Name, label = string.IsNullOrEmpty(e.Region) ? e.Name : e.Region, address = ProxyRules.Describe(e.Proxy),
@@ -28,7 +29,7 @@ namespace Recognition.Browser
             PostToVpnPage(new
             {
                 type = "snapshot", mode = _netMode, proxy = ProxyRules.Describe(_netProxy), region = _netExitRegion ?? "",
-                down = _netProxyDown, activeNow = NetActive(), exits,
+                down = _netProxyDown, activeNow = NetActive(), exits, system = VpnDetect.Describe(_sysVpn), sysKind = _sysVpn?.Kind ?? "",
                 note = note ?? "", ok
             });
         }
@@ -43,6 +44,12 @@ namespace Recognition.Browser
                 if (msg == "exit-state") { await SendVpnSnapshotAsync(); return; }
                 if (msg == "exit-off") { SetVpnOff(); await SendVpnSnapshotAsync("Direct connection chosen. It applies after you restart Recognition."); return; }
                 if (msg == "exit-restart") { RestartToApply(); return; }
+                if (msg == "exit-ip")
+                {
+                    if (string.IsNullOrWhiteSpace(_netExitCheckUrl)) { await SendVpnSnapshotAsync("No address-check page is configured.", false); return; }
+                    var ct = await NewTabCoreAsync("New tab"); if (ct == null) return;
+                    Tabs.SelectedItem = ct.Item; ShowActiveWebView(); NavigateTab(ct, _netExitCheckUrl); return;   // only when you press the button
+                }
                 if (msg.StartsWith("exit-test:", StringComparison.Ordinal))
                 {
                     var ep = FindExit(Dec(msg.Substring("exit-test:".Length)));
@@ -113,7 +120,7 @@ namespace Recognition.Browser
 <br>The web engine takes its proxy when it starts, so a change needs a restart. A SOCKS5 exit also looks up website names through the exit. Only the traffic of this browser goes through an exit.</div>
 <div id='msg' class='u' style='min-height:20px;margin:10px 0;font-size:13px'></div>
 <div id='info' class='row' style='display:block'></div>
-<div style='margin:8px 0 4px;display:flex;gap:8px;flex-wrap:wrap'><a class='btn' onclick=""send('exit-restart')"">Restart to apply</a><a class='btn ghost' onclick=""send('exit-off')"">Use a direct connection</a></div>
+<div style='margin:8px 0 4px;display:flex;gap:8px;flex-wrap:wrap'><a class='btn' onclick=""send('exit-restart')"">Restart to apply</a><a class='btn ghost' onclick=""send('exit-off')"">Use a direct connection</a><a class='btn ghost' onclick=""send('exit-ip')"">Check my public address</a></div>
 <h1 style='font-size:16px'>Exits</h1><div id='exits'></div>
 <h1 style='font-size:16px'>Add an exit</h1>
 <div style='display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0'>
@@ -131,8 +138,8 @@ function add(){send('exit-add:'+enc(JSON.stringify({name:$('n').value,type:$('t'
 function btn(t,cmd,ghost){var a=el('a',t,'btn'+(ghost?' ghost':''));a.style.marginLeft='6px';a.onclick=function(){send(cmd)};return a}
 function render(m){
   var i=$('info');i.textContent='';
-  var s=m.mode==='proxy'&&m.proxy?(m.down?'Chosen exit: '+m.region+' ('+m.proxy+'), but it could not be reached when Recognition started, so this session is DIRECT.':(m.activeNow?'In use now: '+m.region+' ('+m.proxy+')':'Chosen exit: '+m.region+' ('+m.proxy+'). Restart to start using it.')):'No exit chosen: Recognition connects directly.';
-  i.appendChild(el('div',s,'t'));
+  var s=m.mode==='proxy'&&m.proxy?(m.down?'Chosen exit: '+m.region+' ('+m.proxy+'), but it could not be reached when Recognition started, so this session is DIRECT.':(m.activeNow?'In use now: '+m.region+' ('+m.proxy+')':'Chosen exit: '+m.region+' ('+m.proxy+'). Restart to start using it.')):(m.sysKind==='vpn'?'No exit chosen in Recognition. Your VPN app is carrying this browser\'s traffic.':'No exit chosen: Recognition connects directly.');
+  i.appendChild(el('div',s,'t'));i.appendChild(el('div',m.system,'u'));
   var x=$('exits');x.textContent='';
   (m.exits||[]).forEach(function(e){var r=el('div',null,'row');var l=el('div');
     l.appendChild(el('div',e.label+(e.active?'   (chosen)':''),'t'));l.appendChild(el('div',e.address+(e.local?'  ·  on this computer':''),'u'));r.appendChild(l);

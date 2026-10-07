@@ -188,6 +188,7 @@ document.addEventListener('keydown',function(e){
                 LoadBlocklist();
                 InitFilters();
                 LoadNetworkConfig();
+                RefreshSysVpn();
                 LoadExtensionsConfig();
 
                 // Reachability check: if the configured exit is a dead/placeholder host, the engine
@@ -245,7 +246,7 @@ document.addEventListener('keydown',function(e){
             if (tab == null) return;
             Tabs.SelectedItem = tab.Item;
             ShowActiveWebView();
-            LoadInternal(tab, "start");
+            if (_homeUrl == StartBackground.StartPage) LoadInternal(tab, "start"); else NavigateTab(tab, _homeUrl);   // new tabs open your home page
             AddressBar.Text = "";
             AddressBar.Focus();
         }
@@ -787,11 +788,12 @@ document.addEventListener('keydown',function(e){
             }
             else
             {
-                VpnBtn.Content = on ? ("\U0001F310 " + region) : "\U0001F310";
-                VpnBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0x6F, 0xCF, 0x97) : Color.FromRgb(0x8B, 0x90, 0x9A));
+                bool sysOn = !on && _sysVpn != null && _sysVpn.Kind == "vpn";
+                VpnBtn.Content = on ? ("\U0001F310 " + region) : (sysOn ? "\U0001F310 VPN" : "\U0001F310");
+                VpnBtn.Foreground = new SolidColorBrush((on || sysOn) ? Color.FromRgb(0x6F, 0xCF, 0x97) : Color.FromRgb(0x8B, 0x90, 0x9A));
                 VpnBtn.ToolTip = on
                     ? ("VPN ON — " + _netMode + (string.IsNullOrEmpty(_netExitRegion) ? "" : " · " + _netExitRegion) + "  (click for settings)")
-                    : "No VPN or proxy in use (direct connection) — click to set one up";
+                    : (sysOn ? ("VPN app detected: " + _sysVpn!.Name + " - click for details") : "No VPN or proxy in use (direct connection) - click to set one up");
             }
         }
         // The toolbar button opens the VPN / proxy page, where every action says what happened. (It used to open a menu whose choices
@@ -861,7 +863,8 @@ document.addEventListener('keydown',function(e){
                 if (r.TryGetProperty("passkeys_level", out var pl) && pl.ValueKind == JsonValueKind.String && pl.GetString() is "on" or "off") _passkeyLevel = pl.GetString()!;
                 if (r.TryGetProperty("tracking_level", out var tl) && tl.ValueKind == JsonValueKind.String && tl.GetString() is "off" or "basic" or "balanced" or "strict") _trackingLevel = tl.GetString()!;
                 if (r.TryGetProperty("soteria_root", out var sr) && sr.ValueKind == JsonValueKind.String && SoteriaBridge.IsSafeRoot(sr.GetString())) _soteriaRoot = sr.GetString()!.Trim();
-                if (r.TryGetProperty("home_url", out var hu)) { var s = hu.GetString(); if (!string.IsNullOrWhiteSpace(s)) _homeUrl = s; }
+                if (r.TryGetProperty("start_bg", out var sbg) && sbg.ValueKind == JsonValueKind.String) _startBg = StartBackground.Normalize(sbg.GetString());
+                if (r.TryGetProperty("home_url", out var hu)) { var s = StartBackground.HomeUrl(hu.GetString(), File.Exists); if (s != null) _homeUrl = s; }
                 if (r.TryGetProperty("appearance", out var ap) && ap.ValueKind == JsonValueKind.Object) _appearance.FromJson(ap);
             }
             catch { }
@@ -874,7 +877,7 @@ document.addEventListener('keydown',function(e){
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
                 File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "," +
                                           J("strip_tracking") + ":" + (_stripTracking ? "true" : "false") + "," + J("send_gpc") + ":" + (_sendGpc ? "true" : "false") + "," + J("shield_level") + ":" + J(_shieldLevel) + "," + J("passkeys_level") + ":" + J(_passkeyLevel) + "," + J("tracking_level") + ":" + J(_trackingLevel) + "," +
-                                          J("soteria_root") + ":" + J(_soteriaRoot) + "," + J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
+                                          J("soteria_root") + ":" + J(_soteriaRoot) + "," + J("start_bg") + ":" + J(_startBg) + "," + J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
             }
             catch { }
         }
@@ -1293,7 +1296,7 @@ document.addEventListener('keydown',function(e){
         private string LockedHtml() =>
             "<html><body style='font-family:Segoe UI,Arial;background:#1e1f22;color:#e8e8e8;padding:48px'>"
           + "<h1>&#128274; Recognition — Locked</h1>"
-          + "<p>Startup verification failed. Per the runtime laws (&sect;5, &sect;20), the browser will not open until identity, policy, the trust root, and the evidence chain verify.</p>"
+          + "<p>Startup verification failed. Per the runtime laws, the browser will not open until identity, policy, the trust root, and the evidence chain verify.</p>"
           + "<pre style='background:#111;padding:16px;border-radius:8px;white-space:pre-wrap'>"
           + System.Net.WebUtility.HtmlEncode(_preflightOut) + "</pre></body></html>";
 
@@ -1398,10 +1401,10 @@ document.addEventListener('keydown',function(e){
             "a{color:#6aa9e9}";
         private const string PageFoot = "</div></body></html>";
 
-        private static string StartPageHtml()
+        private string StartPageHtml()
         {
             // One small self-contained page: inline SVG, no web fonts, no images, no external requests.
-            return @"<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><title>Recognition</title><style>
+            var html = @"<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><title>Recognition</title><style>
 :root{--bg:#111318;--panel:#181b21;--line:#262a33;--txt:#e9ebef;--mut:#818998;--acc:#4c9bf0;--acc2:#7c6cf0}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -1456,6 +1459,8 @@ if(/^[a-z][a-z0-9+.\-]*:\/\//i.test(v)){location.href=v;}
 else if(v.indexOf('.')>-1&&v.indexOf(' ')===-1){location.href='https://'+v;}
 else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 </script></body></html>";
+            var bg = StartBackgroundCss();
+            return bg.Length == 0 ? html : html.Replace("</style></head>", "</style><style>" + bg + "</style></head>");
         }
 
         private string PrivateStartPageHtml()
@@ -1576,7 +1581,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 
             sb.Append(AppearanceSectionHtml());
 
-            sb.Append("<h1 style='font-size:16px'>Network / VPN (&sect;5.3 / &sect;29)</h1>");
+            sb.Append(StartSettingsHtml());
+            sb.Append("<h1 style='font-size:16px'>Network / VPN</h1>");
             bool netWarn = _netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy) && _netProxyDown;
             if (netWarn)
                 sb.Append("<div class='row' style='border:1px solid #E0B44C;background:#2a2410'><div><div class='t' style='color:#E0B44C'>&#9888; Configured exit unreachable &mdash; running DIRECT this session</div>" +
@@ -1611,7 +1617,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + (_extPaths.Count + _extState.Items.Count) + " configured") : "off") + " &middot; <a class='t' href='recognition:extensions'>manage extensions</a>" + "</div></div>");
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Configured in <code>config\\extensions.v1.json</code>: an unpacked folder, a <code>.zip</code>, or a <code>.crx</code> (universal adapter — all three are normalized to an unpacked folder). Every extension must ALSO pass the governance load gate (<code>recognition_extension_governance_v1.ps1</code>): its current bytes are hashed and checked against a ledger decision an operator recorded explicitly via <code>-Action register</code>. Nothing loads on first sight, on a tamper, or on a review/deny decision &mdash; refusals are receipted like any other action.</div>");
 
-            sb.Append("<h1 style='font-size:16px'>Site Permissions &amp; Policy (&sect;53.1/&sect;54.1)</h1>");
+            sb.Append("<h1 style='font-size:16px'>Site permissions &amp; policy</h1>");
             var curOrigin = (Active != null && !Active.IsInternal) ? TryHost(Active.CurrentUrl) : "";
             if (string.IsNullOrEmpty(curOrigin))
                 sb.Append("<div class='muted' style='margin:6px 0 10px'>Open a site in another tab to manage its permissions and tracker-blocking exemption here.</div>");
@@ -1649,7 +1655,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                       (spOk ? "<span style='color:#7fd6a0'>verified</span>" : "<span style='color:#e06c6c'>TAMPERED / broken</span>") +
                       ". Same hash-chained, DPAPI-encrypted format as action receipts &mdash; the current state above is a pure replay (latest decision per site/permission wins).</div>");
 
-            sb.Append("<h1 style='font-size:16px'>TLS Certificate Errors (Certificate Manager, &sect;54)</h1>");
+            sb.Append("<h1 style='font-size:16px'>Certificate errors</h1>");
             if (_certErrors.Count == 0)
                 sb.Append("<div class='muted' style='margin:6px 0 10px'>No certificate errors seen this session. Every TLS certificate error is refused by default (fail-closed) unless the exact certificate (pinned by subject/issuer/validity, not just host) has been explicitly trusted. Mutual-TLS client certificate requests are always refused automatically — no client certificate is ever auto-presented.</div>");
             else
@@ -1665,7 +1671,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 sb.Append("<div class='muted' style='margin:6px 0 18px'>Trust is pinned to the exact certificate above — if this host later presents a different certificate, it is refused again until separately trusted. Client certificate requests are always refused automatically.</div>");
             }
 
-            sb.Append("<h1 style='font-size:16px'>Updates (governed updater, &sect;54)</h1>");
+            sb.Append("<h1 style='font-size:16px'>Updates</h1>");
             sb.Append("<div class='kv'><div class='k'>Installed version</div><div class='v'>" + Esc(InstalledVersion()) + "</div></div>");
             sb.Append("<div class='muted' style='margin:6px 0 10px'>Recognition never checks for or downloads updates on its own. Choose an update package folder you obtained yourself: it is applied only if its signature verifies against the pinned trust root, every file hash matches, no path escapes the install or touches <code>runtime\\</code> / the trust root, and the version is strictly newer (no downgrade). Replaced files are backed up and rolled back automatically on any failure.</div>");
             sb.Append("<div style='margin:0 0 18px;display:flex;gap:10px;flex-wrap:wrap'>" +
@@ -1681,7 +1687,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Verified at every launch against a signed record (Ed25519, pinned trust root). " +
                       "A modified binary is refused before the browser opens.</div>");
 
-            sb.Append("<h1 style='font-size:16px'>Cookies (&sect;23)</h1>");
+            sb.Append("<h1 style='font-size:16px'>Cookies</h1>");
             bool cookOk = _cookies != null && _cookies.Verify(out int cookVerified);
             sb.Append("<div class='kv'><div class='k'>Governed receipts</div><div class='v'>" + (_cookies?.Count ?? 0) + "</div></div>");
             sb.Append("<div class='kv'><div class='k'>Chain</div><div class='v' style='color:" + (cookOk ? "#7fd6a0" : "#e06c6c") + "'>" + (cookOk ? "verified" : "TAMPERED / broken") + "</div></div>");
@@ -1850,6 +1856,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             else if (msg.StartsWith("sv-") && tab.Internal == "soteria") HandleSoteriaMessage(msg);
             else if (msg.StartsWith("exp-") && tab.Internal == "export") HandleExportMessage(msg);
             else if (msg.StartsWith("exit-") && tab.Internal == "vpn") HandleVpnMessage(msg);
+            else if ((msg.StartsWith("home-set:") || msg.StartsWith("bg-")) && tab.Internal == "settings") HandleStartPageMessage(tab, msg);
             else if (msg.StartsWith("appearance-set:"))
             {
                 var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);

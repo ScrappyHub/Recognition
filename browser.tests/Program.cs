@@ -1022,6 +1022,48 @@ Console.WriteLine("=== Password vault (executed C#) ===");
         }
 }
 
+// ---- VPN app detection, start page background, home page ----
+{
+    AdapterInfo Ad(string n, string d, string t = "Ethernet", bool up = true) => new AdapterInfo(n, d, t, up);
+    Check(VpnDetect.Find(new[] { Ad("Ethernet", "Intel(R) Ethernet Connection"), Ad("Wi-Fi", "Intel(R) Wi-Fi 6 AX201") }) == null, "vpn detect: ordinary adapters are not a VPN");
+    Check(VpnDetect.Find(new[] { Ad("Wi-Fi", "Intel Wi-Fi"), Ad("NordLynx", "NordLynx Tunnel", "Tunnel") }) is { Kind: "vpn" } vdA && vdA.Name.Contains("NordLynx"), "vpn detect: NordLynx is a VPN");
+    Check(VpnDetect.Find(new[] { Ad("Local Area Connection 2", "TAP-Windows Adapter V9") }) is { Kind: "vpn" }, "vpn detect: OpenVPN's TAP adapter is a VPN");
+    Check(VpnDetect.Find(new[] { Ad("wg0", "WireGuard Tunnel") }) is { Kind: "vpn" }, "vpn detect: WireGuard is a VPN");
+    Check(VpnDetect.Find(new[] { Ad("Work", "WAN Miniport (IKEv2)", "Ppp") }) == null, "vpn detect: an unused WAN Miniport entry is ignored");
+    Check(VpnDetect.Find(new[] { Ad("Office VPN", "Office VPN", "Ppp") }) is { Kind: "vpn" }, "vpn detect: a Windows built-in VPN connection (point-to-point) is a VPN");
+    Check(VpnDetect.Find(new[] { Ad("NordLynx", "NordLynx Tunnel", "Tunnel", false) }) == null, "vpn detect: an adapter that is down does not count");
+    Check(VpnDetect.Find(new[] { Ad("Teredo Tunneling Pseudo-Interface", "Teredo Tunneling Pseudo-Interface", "Tunnel") }) == null, "vpn detect: Teredo is not a VPN");
+    Check(VpnDetect.Find(new[] { Ad("vEthernet (Default Switch)", "Hyper-V Virtual Ethernet Adapter"), Ad("vEthernet (WSL)", "Hyper-V Virtual Ethernet Adapter #2") }) == null, "vpn detect: Hyper-V and WSL adapters are not a VPN");
+    Check(VpnDetect.Find(new[] { Ad("VMware Network Adapter VMnet8", "VMware Virtual Ethernet Adapter for VMnet8") }) == null, "vpn detect: VMware adapters are not a VPN");
+    Check(VpnDetect.Find(new[] { Ad("Tailscale", "Tailscale Tunnel", "Tunnel") }) is { Kind: "mesh" }, "vpn detect: Tailscale is reported as a mesh network, not a VPN");
+    Check(VpnDetect.Find(new[] { Ad("Tailscale", "Tailscale Tunnel", "Tunnel"), Ad("ProtonVPN", "ProtonVPN TUN") }) is { Kind: "vpn" }, "vpn detect: a real VPN wins over a mesh network");
+    Check(VpnDetect.Find(null) == null && VpnDetect.Find(new AdapterInfo[0]) == null, "vpn detect: no adapters, no answer");
+    Check(VpnDetect.Describe(null).Contains("No VPN") && VpnDetect.Describe(new VpnFound("X", "vpn")).Contains("looks active") && VpnDetect.Describe(new VpnFound("X", "mesh")).Contains("does not hide"), "vpn detect: plain-words descriptions");
+
+    foreach (var sbP in StartBackground.Presets) Check(StartBackground.Normalize(sbP.ToUpperInvariant()) == sbP, "start bg: preset " + sbP + " is accepted");
+    Check(StartBackground.Normalize("#A1b2C3") == "#a1b2c3" && StartBackground.Normalize("image") == "image", "start bg: colour and image keys are accepted");
+    foreach (var sbBad in new[] { "", "red", "#fff", "#12345g", "#1234567", "url(x)", "default;}body{display:none", "</style><script>", null })
+        Check(StartBackground.Normalize(sbBad) == "default", "start bg: refused '" + (sbBad ?? "null") + "'");
+    Check(StartBackground.Css("default", null) == "", "start bg: default adds nothing");
+    foreach (var sbP in new[] { "aurora", "dusk", "forest", "slate", "light", "#336699", "#f0f0f0" })
+        Check(StartBackground.Css(sbP, null).StartsWith("body{background:") && !StartBackground.Css(sbP, null).Contains("url(") && !StartBackground.Css(sbP, null).Contains("<"), "start bg: " + sbP + " is plain CSS with no urls or tags");
+    Check(StartBackground.Css("#f0f0f0", null).Contains("--txt") && !StartBackground.Css("#101010", null).Contains("--txt"), "start bg: a light colour switches the page text to dark, a dark one does not");
+    var sbOk = "data:image/jpeg;base64,/9j/4AAQSkZJRg==";
+    Check(StartBackground.Css("image", sbOk).Contains("url(" + sbOk + ")"), "start bg: a saved picture is used as a data: URL");
+    foreach (var sbBadImg in new[] { null, "", "https://evil.example/x.jpg", "data:text/html;base64,AAAA", "data:image/jpeg;base64,AAA\")}body{display:none", "data:image/jpeg;base64,AAAA) , url(https://evil.example/x", "javascript:alert(1)" })
+        Check(StartBackground.Css("image", sbBadImg) == "", "start bg: a picture that is not a plain base64 data URL is not used");
+    Check(StartBackground.Css("image", "data:image/jpeg;base64," + new string('A', 3_100_000)) == "", "start bg: an oversized picture is not used");
+
+    Check(StartBackground.HomeUrl("recognition:start") == "recognition:start" && StartBackground.HomeUrl(" START ") == "recognition:start", "home: the start page");
+    Check(StartBackground.HomeUrl("https://example.com/a?b=1") == "https://example.com/a?b=1", "home: a full https address");
+    Check(StartBackground.HomeUrl("example.com") == "https://example.com/", "home: a bare site name becomes https");
+    Check(StartBackground.HomeUrl("  duckduckgo.com  ") == "https://duckduckgo.com/", "home: spaces around the site name are ignored");
+    foreach (var hmBad in new[] { "", "   ", "javascript:alert(1)", "data:text/html,x", "file:///C:/x.html", "ftp://example.com", "https://a@evil.com/", "https://bank.com@evil.com/", "two words.com", "nodot", "mailto:a@b.c", "\\\\srv\\share\\a.html", null })
+        Check(StartBackground.HomeUrl(hmBad) == null, "home: refused '" + (hmBad ?? "null") + "'");
+    Check(StartBackground.HomeUrl(@"C:\pages\home.html", p => true) is { } hmF && hmF.StartsWith("file:"), "home: an existing local .html file is accepted");
+    Check(StartBackground.HomeUrl(@"C:\pages\home.html", p => false) == null, "home: a missing local file is refused");
+}
+
 Console.WriteLine();
 Console.WriteLine($"checks passed: {pass}  failed: {fail}");
 if (fail > 0) { Console.Error.WriteLine("BROWSER_GOVERNED_ACTIONS_TESTS_FAIL: " + fail); return 1; }

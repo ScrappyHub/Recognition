@@ -132,3 +132,12 @@ The handoff has no separate DoD; §31's ✓ pattern **is** the definition, gover
 | Export result page (`recognition:export`) | Built: packet code, QR of the packet fingerprint (QrCode.cs, golden-hash tests, cross-checked with OpenCV), copy, open folder. Needs a manual check. |
 | Tools discoverability | Menu Tools and VPN items, Settings row. Translate and widgets are not built. |
 
+## v1.3.3: home page, start background, VPN-app hint (unverified until the gate is run on Windows)
+
+| Area | State |
+|---|---|
+| Home page | Settings row sets the home page (start page, a site name, or an https address; same address rules as launch arguments). New tabs and the Home button open it. Rules in StartBackground.cs are executed by tests. |
+| Start page background | Presets, a colour, or a picture you choose (shrunk to a JPEG under about 1.3 MB in `runtime\start_bg.jpg`, embedded in the page, no web requests). Only a preset name, a #rrggbb colour or a base64 JPEG data URL can become CSS (tested). |
+| VPN app hint | `VpnDetect.cs` reads network adapters (name, description, type, up) and recognises common VPN apps and Windows' own VPN connections; mesh tools (Tailscale, ZeroTier) are reported as such. Shown on the VPN page and the toolbar button. It is a hint: it cannot prove all traffic uses the VPN. Rules executed by tests. |
+| Settings wording | Section-sign references (the spec numbers) removed from visible headings. |
+
