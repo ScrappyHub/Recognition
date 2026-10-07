@@ -255,6 +255,190 @@ Console.WriteLine("=== Setup snapshot (executed C#) ===");
 }
 
 Console.WriteLine();
+Console.WriteLine("=== Code highlighter (executed C#) ===");
+{
+    string HlJoin(List<List<(string Cls, string Text)>> ls) => string.Join("\n", ls.Select(x => string.Concat(x.Select(t => t.Text))));
+    bool HlHas(List<(string Cls, string Text)> line, string cls, string text) => line.Any(t => t.Cls == cls && t.Text == text);
+    Check(CodeHighlighter.LanguageFor("Program.CS") == "csharp" && CodeHighlighter.LanguageFor(@"C:\x\run.ps1") == "powershell" && CodeHighlighter.LanguageFor("Makefile") == "text" && CodeHighlighter.LanguageFor(null) == "text" && CodeHighlighter.LanguageFor("a.json") == "json" && CodeHighlighter.IsCodeFile("x.py") && !CodeHighlighter.IsCodeFile("x.exe"), "language detection by extension (case-insensitive, unknown/null -> text)");
+
+    var cs = CodeHighlighter.Highlight("public class Foo { // hi\n  string s = \"a\\\"b\"; int x = 42; Bar(1); }", "csharp");
+    Check(cs.Count == 2 && HlHas(cs[0], "kw", "public") && HlHas(cs[0], "kw", "class") && HlHas(cs[0], "type", "Foo") && cs[0].Any(t => t.Cls == "com" && t.Text == "// hi"), "C#: keywords, type name and line comment");
+    Check(HlHas(cs[1], "kw", "string") && HlHas(cs[1], "str", "\"a\\\"b\"") && HlHas(cs[1], "num", "42") && HlHas(cs[1], "fn", "Bar"), "C#: string with escaped quote stays one token; number and call recognised");
+
+    var blk = CodeHighlighter.Highlight("/* a\nb */ int x;", "csharp");
+    Check(blk.Count == 2 && blk[0].Count == 1 && blk[0][0] == ("com", "/* a") && blk[1][0] == ("com", "b */") && HlHas(blk[1], "kw", "int"), "a block comment spanning lines is cut per line and highlighting resumes after it");
+
+    var unterminated = CodeHighlighter.Highlight("var s = \"abc\nint x = 1;", "csharp");
+    Check(unterminated.Count == 2 && HlHas(unterminated[1], "kw", "int") && HlHas(unterminated[1], "num", "1"), "an unterminated string ends at the line end and never swallows the rest of the file");
+
+    var verb = CodeHighlighter.Highlight("var p = @\"C:\\dir\\\" + x;", "csharp");
+    Check(verb[0].Any(t => t.Cls == "str" && t.Text == "@\"C:\\dir\\\""), "C# verbatim string: backslash before the closing quote is not an escape");
+
+    var py = CodeHighlighter.Highlight("\"\"\"doc\nstring\"\"\"\nx = 1  # c", "python");
+    Check(py.Count == 3 && py[0][0].Cls == "str" && py[1][0].Cls == "str" && HlHas(py[2], "num", "1") && py[2].Any(t => t.Cls == "com"), "Python: triple-quoted string across lines, number, # comment");
+
+    var jsonT = CodeHighlighter.Highlight("{\"name\": \"v\", \"n\": 1, \"ok\": true}", "json");
+    Check(HlHas(jsonT[0], "attr", "\"name\"") && HlHas(jsonT[0], "str", "\"v\"") && HlHas(jsonT[0], "num", "1") && HlHas(jsonT[0], "kw", "true"), "JSON: keys vs string values, numbers, literals");
+
+    var psT = CodeHighlighter.Highlight("$x = 'it''s' # c\n<# block\n#> if ($x) {}", "powershell");
+    Check(HlHas(psT[0], "var", "$x") && HlHas(psT[0], "str", "'it''s'") && psT[0].Any(t => t.Cls == "com") && psT.Count == 3 && psT[1][0].Cls == "com" && HlHas(psT[2], "kw", "if"), "PowerShell: variables, doubled-quote string, comments, block comment, keywords");
+
+    var sql = CodeHighlighter.Highlight("SELECT * FROM t WHERE id = 1 -- hi", "sql");
+    Check(HlHas(sql[0], "kw", "SELECT") && HlHas(sql[0], "kw", "FROM") && HlHas(sql[0], "num", "1") && sql[0].Any(t => t.Cls == "com"), "SQL: keywords are case-insensitive, -- comments");
+
+    var htm = CodeHighlighter.Highlight("<!-- c -->\n<a href=\"x\" id='y'>t</a>", "html");
+    Check(htm[0][0].Cls == "com" && HlHas(htm[1], "kw", "a") && HlHas(htm[1], "attr", "href") && HlHas(htm[1], "str", "\"x\"") && HlHas(htm[1], "kw", "a"), "HTML: comment, tag names, attribute names, quoted values");
+
+    var cssT = CodeHighlighter.Highlight("a:hover { color: #fff; margin: 4px; }", "css");
+    Check(!HlHas(cssT[0], "attr", "a") && HlHas(cssT[0], "attr", "color") && HlHas(cssT[0], "num", "#fff") && HlHas(cssT[0], "num", "4px"), "CSS: properties are highlighted inside rules, selectors like a:hover are not");
+
+    var crlf = CodeHighlighter.Highlight("a\r\nb\r\n", "text");
+    Check(crlf.Count == 3 && crlf.All(x => x.All(t => !t.Text.Contains('\r'))), "CRLF input: no stray carriage returns in any line");
+    Check(CodeHighlighter.Render("a\nb\n", "text").Split("class='l'").Length - 1 == 2, "render: a trailing newline does not add an extra empty line");
+    Check(CodeHighlighter.Render("", "csharp").Contains("id='L1'") && CodeHighlighter.Render(null, null).Contains("id='L1'"), "empty and null input render one empty line without throwing");
+
+    var evil = "'\"><img src=x onerror=alert(1)></script><svg onload=alert(1)>";
+    Check(CodeHighlighter.Languages.All(lg => { var h = CodeHighlighter.Render(evil + "\n/* " + evil + " */\n\"" + evil + "\"", lg); return !h.Contains("<img") && !h.Contains("<svg") && !h.Contains("</script"); }), "render: hostile markup in the source is HTML-encoded for every language (no tag can be injected)");
+
+    var corpus = new[] { "", "\n", "x", "a\n\nb", "\"\"\"\n", "'''a", "/*", "/* a */ b /* c", "<<<", "<a href=\"x", "<!-- ", "@\"abc", "$@\"a\"\"b\"", "`multi\nline`", "// c\n# d\n-- e", "\t \t\n", "é漢字😀 \"ü\"", "{ \"a\": [1, 2.5e3, -4, true, null] }", "a.b.c(d)(e)", "0x1F 1_000 .5 5." };
+    bool roundTrip = true;
+    foreach (var lg in CodeHighlighter.Languages) foreach (var src in corpus) if (HlJoin(CodeHighlighter.Highlight(src, lg)) != src) { roundTrip = false; Console.WriteLine("    roundtrip mismatch: " + lg + " / " + src.Replace("\n", "\\n")); }
+    Check(roundTrip, "round trip: concatenating all tokens reproduces the input exactly for every language and every corpus sample (nothing lost or duplicated)");
+
+    Check(CodeHighlighter.LooksBinary(new byte[] { 0x4D, 0x5A, 0x00, 0x01 }) && !CodeHighlighter.LooksBinary(Encoding.UTF8.GetBytes("plain text\n")) && !CodeHighlighter.LooksBinary(Encoding.Unicode.GetPreamble().Concat(Encoding.Unicode.GetBytes("hi")).ToArray()) && !CodeHighlighter.LooksBinary(null) && !CodeHighlighter.LooksBinary(new byte[0]), "binary detection: NUL bytes mean binary, UTF-16 with a BOM is still text, null/empty are not binary");
+    Check(CodeHighlighter.DecodeText(Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes("é漢")).ToArray()) == "é漢" && CodeHighlighter.DecodeText(Encoding.Unicode.GetPreamble().Concat(Encoding.Unicode.GetBytes("é漢")).ToArray()) == "é漢" && CodeHighlighter.DecodeText(Encoding.BigEndianUnicode.GetPreamble().Concat(Encoding.BigEndianUnicode.GetBytes("é漢")).ToArray()) == "é漢" && CodeHighlighter.DecodeText(null) == "", "decode: UTF-8, UTF-16 LE and BE byte-order marks are honoured and removed");
+    Check(CodeHighlighter.DecodeText(new byte[] { 0x61, 0xFF, 0xFE, 0x62 }.Skip(0).Take(1).Concat(new byte[] { 0xC3 }).ToArray()).StartsWith("a"), "decode: invalid UTF-8 never throws (replacement characters)");
+    var big = string.Concat(Enumerable.Repeat("int x = \"a\"; // note\n", 60000));
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var bigHl = CodeHighlighter.Highlight(big, "csharp");
+    sw.Stop();
+    Check(bigHl.Count == 60001 && sw.ElapsedMilliseconds < 8000, "performance: 60,000 lines (~1.4 MB) highlight in well under 8 s (measured " + sw.ElapsedMilliseconds + " ms)");
+    var hostile = string.Concat(Enumerable.Repeat("\"/*'`<#", 40000));
+    sw.Restart();
+    foreach (var lg in new[] { "csharp", "javascript", "powershell", "html", "python" }) CodeHighlighter.Highlight(hostile, lg);
+    sw.Stop();
+    Check(sw.ElapsedMilliseconds < 15000, "performance: 280 KB of quote/comment-opener garbage stays linear across 5 languages (measured " + sw.ElapsedMilliseconds + " ms)");
+    foreach (var run in new[] { "(", "$", "@", "<", "\"", "\\", "a" })
+    {
+        var longRun = new string(run[0], 1_000_000);
+        sw.Restart();
+        foreach (var lg in new[] { "csharp", "powershell", "html", "css" }) CodeHighlighter.Highlight(longRun, lg);
+        sw.Stop();
+        Check(sw.ElapsedMilliseconds < 20000, "performance: a single 1,000,000-character run of '" + run + "' across 4 languages stays linear (measured " + sw.ElapsedMilliseconds + " ms)");
+    }
+}
+
+Console.WriteLine();
+Console.WriteLine("=== PDF page tools (executed C#, PDFsharp) ===");
+{
+    byte[] MakePdf(string prefix, int n)
+    {
+        var d = new PdfSharp.Pdf.PdfDocument();
+        for (int i = 1; i <= n; i++) { var p = d.AddPage(); p.Elements.SetString("/Marker", prefix + i); }
+        using var ms = new MemoryStream(); d.Save(ms, false); return ms.ToArray();
+    }
+    List<string> Markers(byte[] pdf)
+    {
+        using var d = PdfSharp.Pdf.IO.PdfReader.Open(new MemoryStream(pdf), PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import);
+        return Enumerable.Range(0, d.PageCount).Select(i => d.Pages[i].Elements.GetString("/Marker")).ToList();
+    }
+    bool PdfFails(Action a) { try { a(); return false; } catch (PdfToolException) { return true; } }
+    string Sha(byte[] b) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(b));
+    string J(IEnumerable<string> x) => string.Join(",", x);
+
+    var pdfA = MakePdf("a", 5);
+    Check(PdfTools.PageCount(pdfA) == 5 && J(Markers(pdfA)) == "a1,a2,a3,a4,a5", "test PDFs: 5 tagged pages read back in order");
+
+    string? perr;
+    Check(J(PdfTools.ParseRange("1-3,5", 5, out perr)!.Select(i => i + 1).Select(i => i.ToString())) == "1,2,3,5" && perr == null, "range: '1-3,5' -> pages 1,2,3,5");
+    Check(J(PdfTools.ParseRange("2-", 5, out _)!.Select(i => (i + 1).ToString())) == "2,3,4,5" && J(PdfTools.ParseRange("-2", 5, out _)!.Select(i => (i + 1).ToString())) == "1,2", "range: open-ended '2-' and '-2'");
+    Check(J(PdfTools.ParseRange("5-3", 5, out _)!.Select(i => (i + 1).ToString())) == "5,4,3" && J(PdfTools.ParseRange(" 1 , 3 ", 5, out _)!.Select(i => (i + 1).ToString())) == "1,3", "range: descending ranges allowed, whitespace tolerated");
+    var badSpecs = new[] { "", "  ", "0", "6", "a", "1-2-3", "1,,2", ",", "9999999999", "3-1x", "-", "1--2", "+1", "1.5" };
+    var notRejected = badSpecs.Where(s => PdfTools.ParseRange(s, 5, out var e3) != null).ToList();
+    Check(notRejected.Count == 0, "range: invalid specs all rejected with a message" + (notRejected.Count > 0 ? " (accepted: " + string.Join(" | ", notRejected) + ")" : ""));
+
+    var pdfSha0 = Sha(pdfA);
+    Check(J(Markers(PdfTools.Extract(pdfA, "2,4-5"))) == "a2,a4,a5", "extract: pages 2, 4, 5 in that order");
+    Check(J(Markers(PdfTools.Extract(pdfA, "5-1"))) == "a5,a4,a3,a2,a1", "reorder: '5-1' reverses the document");
+    Check(J(Markers(PdfTools.Extract(pdfA, "3,1,2,4,5"))) == "a3,a1,a2,a4,a5" && J(Markers(PdfTools.Extract(pdfA, "1,1"))) == "a1,a1", "reorder: arbitrary order; duplicates allowed");
+    Check(J(Markers(PdfTools.Delete(pdfA, "2-3"))) == "a1,a4,a5", "delete: pages 2-3 removed, rest keep their order");
+    Check(PdfFails(() => PdfTools.Delete(pdfA, "1-5")) && PdfFails(() => PdfTools.Extract(pdfA, "7")) && PdfFails(() => PdfTools.Extract(pdfA, "")), "delete-all, out-of-range and empty page lists are refused");
+    var pdfB = MakePdf("b", 2);
+    Check(J(Markers(PdfTools.Merge(new[] { MakePdf("a", 3), pdfB }))) == "a1,a2,a3,b1,b2", "merge: documents joined in the order given");
+    Check(PdfFails(() => PdfTools.Merge(new[] { pdfB })) && PdfFails(() => PdfTools.Merge(new[] { pdfB, new byte[] { 1, 2, 3 } })), "merge: needs two PDFs; a non-PDF in the set is refused");
+    var split = PdfTools.SplitEach(pdfA);
+    Check(split.Count == 5 && Enumerable.Range(0, 5).All(i => J(Markers(split[i])) == "a" + (i + 1)), "split: one single-page PDF per page");
+    var rot = PdfTools.Rotate(pdfA, "1,3", 90);
+    Check(J(PdfTools.Rotations(rot).Select(x => x.ToString())) == "90,0,90,0,0" && J(Markers(rot)) == "a1,a2,a3,a4,a5", "rotate: only the listed pages turn; order and content unchanged");
+    Check(J(PdfTools.Rotations(PdfTools.Rotate(rot, "1", 270)).Select(x => x.ToString())) == "0,0,90,0,0" && J(PdfTools.Rotations(PdfTools.Rotate(pdfA, "2", -90)).Select(x => x.ToString())) == "0,270,0,0,0", "rotate: rotation adds to the existing angle and wraps (90+270=0, -90=270)");
+    Check(PdfFails(() => PdfTools.Rotate(pdfA, "1", 45)) && PdfFails(() => PdfTools.Rotate(pdfA, "1", 0)), "rotate: only multiples of 90 are accepted");
+    Check(Sha(pdfA) == pdfSha0, "operations never modify the input bytes");
+    Check(PdfFails(() => PdfTools.PageCount(new byte[0])) && PdfFails(() => PdfTools.PageCount(Encoding.ASCII.GetBytes("this is definitely not a pdf file at all"))) && PdfFails(() => PdfTools.Extract(pdfA.Take(pdfA.Length / 2).ToArray(), "1")), "empty, non-PDF and truncated input fail with a clear PdfToolException instead of crashing");
+    var rnd = new Random(7); var junk = new byte[4096]; rnd.NextBytes(junk);
+    Check(PdfFails(() => PdfTools.PageCount(junk)), "random bytes are refused");
+}
+
+Console.WriteLine();
+Console.WriteLine("=== Image maths (executed C#) ===");
+{
+    int w, h; string? ie;
+    Check(ImageMath.TryTarget(1000, 500, "percent", 50, 0, out w, out h, out ie) && w == 500 && h == 250, "resize: 50% of 1000x500 = 500x250");
+    Check(ImageMath.TryTarget(1000, 500, "width", 400, 0, out w, out h, out ie) && w == 400 && h == 200 && ImageMath.TryTarget(1000, 500, "height", 100, 0, out w, out h, out ie) && w == 200 && h == 100, "resize: by width or height keeps the aspect ratio");
+    Check(ImageMath.TryTarget(4000, 3000, "fit", 800, 800, out w, out h, out ie) && w == 800 && h == 600 && ImageMath.TryTarget(3000, 4000, "fit", 800, 800, out w, out h, out ie) && w == 600 && h == 800, "resize: fit within a box, either orientation");
+    Check(ImageMath.TryTarget(100, 100, "fit", 800, 800, out w, out h, out ie) && w == 800 && h == 800, "resize: fit may enlarge when asked");
+    Check(ImageMath.TryTarget(1000, 500, "exact", 300, 300, out w, out h, out ie) && w == 300 && h == 300, "resize: exact size ignores the aspect ratio");
+    Check(ImageMath.TryTarget(3, 1, "percent", 10, 0, out w, out h, out ie) && w == 1 && h == 1, "resize: never rounds down to zero pixels");
+    Check(new[] { ("percent", 0.0, 0.0), ("percent", -5.0, 0.0), ("percent", 100000.0, 0.0), ("width", 0.0, 0.0), ("width", 99999.0, 0.0), ("exact", 10.0, 0.0), ("fit", 0.0, 10.0), ("bogus", 10.0, 10.0), ("width", double.NaN, 0.0), ("height", double.PositiveInfinity, 0.0) }.All(c => !ImageMath.TryTarget(1000, 500, c.Item1, c.Item2, c.Item3, out _, out _, out var e4) && !string.IsNullOrEmpty(e4)), "resize: zero, negative, absurd, NaN, infinite or unknown inputs are refused with a message");
+    Check(!ImageMath.TryTarget(0, 500, "percent", 50, 0, out _, out _, out _), "resize: an image with no size is refused");
+    Check(!ImageMath.TryTarget(5000, 4000, "percent", 300, 0, out w, out h, out ie) && w == 0 && h == 0 && ie != null && ie.Contains("limit"), "resize: 15000x12000 (180 megapixels) is refused by the pixel limit");
+    Check(ImageMath.TryTarget(5000, 4000, "percent", 200, 0, out w, out h, out ie) && w == 10000 && h == 8000, "resize: 10000x8000 (80 megapixels) is within the limit");
+    Check(ImageMath.NormalizeRotation(90) == 90 && ImageMath.NormalizeRotation(-90) == 270 && ImageMath.NormalizeRotation(450) == 90 && ImageMath.NormalizeRotation(45) == -1 && ImageMath.NormalizeRotation(0) == 0, "rotation: normalised to 0/90/180/270; non-multiples of 90 rejected");
+    Check(ImageMath.AfterRotation(1000, 500, 90) == (500, 1000) && ImageMath.AfterRotation(1000, 500, 180) == (1000, 500) && ImageMath.AfterRotation(1000, 500, 270) == (500, 1000), "rotation: width and height swap on 90/270");
+    Check(ImageMath.ClampQuality(0) == 1 && ImageMath.ClampQuality(500) == 100 && ImageMath.ClampQuality(85) == 85, "JPEG quality is clamped to 1..100");
+    Check(ImageMath.FormatFor("PNG") == "png" && ImageMath.FormatFor("jpeg") == "jpg" && ImageMath.FormatFor("jpg") == "jpg" && ImageMath.FormatFor("bmp") == "bmp" && ImageMath.FormatFor("tiff") == "tiff" && ImageMath.FormatFor("exe") == null && ImageMath.FormatFor(null) == null, "output formats are an allowlist (png, jpg, bmp, tiff, gif)");
+    Check(ImageMath.IsImageFile("a.JPG") && ImageMath.IsImageFile("a.webp") && !ImageMath.IsImageFile("a.pdf") && !ImageMath.IsImageFile("a"), "image file detection by extension");
+}
+
+Console.WriteLine();
+Console.WriteLine("=== Host message gate and download rules (executed C#) ===");
+{
+    // The privilege boundary: web content must never reach the command handlers.
+    string[] commands = { "site-perm:evil.com:Camera:allow", "cert-trust:evil.com:der-0123456789abcdef:allow", "cookies-clear-all", "update-apply", "net-forget:Home", "toggle-blocking", "vpn-off", "export-session", "open-profile", "appearance-set:bg:#000000", "pw-reveal:abc", "setup-apply:{}", "tools-pdf-run:{}", "rmbookmark:https://x/", "open:https://evil.example/" };
+    Check(commands.All(c => MessageGate.Classify(false, "https://evil.example/", c) == MessageVerdict.Deny), "gate: a normal web tab cannot send ANY command, whatever its origin");
+    Check(commands.All(c => MessageGate.Classify(true, "https://evil.example/", c) == MessageVerdict.Deny), "gate: even in an 'internal' tab, a message that comes from an http(s) document is refused (tab navigated away, cross-origin frame)");
+    Check(commands.All(c => new[] { "http://x/", "file:///c:/x.html", "ftp://x/", "ws://x/", "wss://x/", "blob:https://x/1", "filesystem:https://x/t/a", "HTTPS://X/", "  https://x/" }.All(s => MessageGate.Classify(true, s, c) == MessageVerdict.Deny)), "gate: every web-like source scheme (http, https, file, ftp, ws, wss, blob, filesystem, any case or leading space) is refused");
+    Check(commands.All(c => MessageGate.Classify(true, "about:blank", c) == MessageVerdict.Command && MessageGate.Classify(true, "data:text/html;charset=utf-8,x", c) == MessageVerdict.Command && MessageGate.Classify(true, "", c) == MessageVerdict.Command && MessageGate.Classify(true, null, c) == MessageVerdict.Command), "gate: the browser's own internal pages (about:, data: or empty source) can still send commands");
+    Check(commands.All(c => MessageGate.Classify(false, "about:blank", c) == MessageVerdict.Deny && MessageGate.Classify(false, null, c) == MessageVerdict.Deny), "gate: a non-internal tab is refused even with an about:blank or empty source");
+    Check(MessageGate.Classify(false, "https://evil.example/", "sc:newtab") == MessageVerdict.Shortcut && MessageGate.Classify(true, "about:blank", "sc:reload") == MessageVerdict.Shortcut, "gate: keyboard shortcuts (sc:) are the only thing web content may send; they use a separate allowlist");
+    Check(MessageGate.Classify(true, "about:blank", "") == MessageVerdict.Deny && MessageGate.Classify(true, "about:blank", null) == MessageVerdict.Deny, "gate: empty messages are refused");
+    Check(MessageGate.Classify(true, "about:blank", "SC:newtab") == MessageVerdict.Command, "gate: prefix matching is case-sensitive ('SC:' is not a shortcut, it is just an unknown command)");
+    Check(MessageGate.IsTabShortcut("newtab") && MessageGate.IsTabShortcut("newprivate") && MessageGate.IsTabShortcut("closetab") && !MessageGate.IsTabShortcut("reload") && !MessageGate.IsTabShortcut("find"), "gate: tab-creating/closing shortcuts are the rate-limited set");
+
+    Check(DownloadRules.Assess("setup.exe") == DownloadRisk.Executable && DownloadRules.Assess("INSTALL.MSI") == DownloadRisk.Executable && DownloadRules.Assess("run.ps1") == DownloadRisk.Executable && DownloadRules.Assess("x.bat") == DownloadRisk.Executable && DownloadRules.Assess("a.lnk") == DownloadRisk.Executable && DownloadRules.Assess("a.hta") == DownloadRisk.Executable && DownloadRules.Assess("a.jar") == DownloadRisk.Executable, "downloads: programs, installers, scripts and shortcuts need confirmation");
+    Check(DownloadRules.Assess("invoice.pdf.exe") == DownloadRisk.Executable && DownloadRules.Assess("setup.exe.") == DownloadRisk.Executable && DownloadRules.Assess("setup.exe  ") == DownloadRisk.Executable && DownloadRules.Assess("setup.exe . ") == DownloadRisk.Executable, "downloads: double extensions and trailing dots/spaces (which Windows ignores) are still recognised");
+    Check(DownloadRules.Assess("report.pdf") == DownloadRisk.None && DownloadRules.Assess("photo.jpg") == DownloadRisk.None && DownloadRules.Assess("data.csv") == DownloadRisk.None && DownloadRules.Assess("archive.zip") == DownloadRisk.None && DownloadRules.Assess("notes") == DownloadRisk.None && DownloadRules.Assess("") == DownloadRisk.None && DownloadRules.Assess(null) == DownloadRisk.None, "downloads: documents, images, data files, archives and extension-less names are not prompted");
+    Check(DownloadRules.Assess("photo\u202Egpj.exe") == DownloadRisk.DeceptiveName && DownloadRules.Assess("a\u202Etxt.js") == DownloadRisk.DeceptiveName && DownloadRules.Assess("x\u200Fy.pdf") == DownloadRisk.DeceptiveName, "downloads: right-to-left override and other direction-control characters in a name are flagged as deceptive");
+}
+
+Console.WriteLine();
+Console.WriteLine("=== Privacy rules (executed C#) ===");
+{
+    Check(PrivacyRules.HttpsUpgrade("http://example.com/a?b=1#c") == "https://example.com/a?b=1#c", "https upgrade: plain http becomes https, path/query/fragment kept");
+    Check(PrivacyRules.HttpsUpgrade("http://example.com:8080/x") == "https://example.com:8080/x", "https upgrade: non-default port is kept");
+    Check(PrivacyRules.HttpsUpgrade("https://example.com/") == null && PrivacyRules.HttpsUpgrade("ftp://example.com/") == null && PrivacyRules.HttpsUpgrade("not a url") == null && PrivacyRules.HttpsUpgrade(null) == null, "https upgrade: https, other schemes, garbage and null are left alone");
+    Check(PrivacyRules.HttpsUpgrade("http://localhost:3000/") == null && PrivacyRules.HttpsUpgrade("http://127.0.0.1/") == null && PrivacyRules.HttpsUpgrade("http://127.5.5.5:81/") == null && PrivacyRules.HttpsUpgrade("http://[::1]:8080/") == null && PrivacyRules.HttpsUpgrade("http://app.localhost/") == null, "https upgrade: loopback (localhost, 127.x, ::1, *.localhost) is exempt");
+    Check(PrivacyRules.HttpsUpgrade("http://localhost.evil.com/") != null && PrivacyRules.HttpsUpgrade("http://127.0.0.1.evil.com/") != null && PrivacyRules.HttpsUpgrade("http://localhostevil.com/") != null, "https upgrade: look-alike hosts (localhost.evil.com, 127.0.0.1.evil.com) are NOT exempt (regression: old prefix check let these through)");
+    Check(PrivacyRules.StripTrackingParams("https://a.example/p?utm_source=x&id=7&fbclid=abc#top", out var n1) == "https://a.example/p?id=7#top" && n1 == 2, "strip: tracking params removed, real params and fragment kept");
+    Check(PrivacyRules.StripTrackingParams("https://a.example/p?gclid=1&UTM_Medium=m", out var n2) == "https://a.example/p" && n2 == 2, "strip: all params tracking -> no dangling '?'; matching is case-insensitive");
+    var same = "https://a.example/p?q=a%20b&x=1&&y";
+    Check(PrivacyRules.StripTrackingParams(same, out var n3) == same && n3 == 0, "strip: URL without tracking params is returned byte-for-byte unchanged");
+    Check(PrivacyRules.StripTrackingParams("https://a.example/p?%75tm_source=x&k=v", out var n4) == "https://a.example/p?k=v" && n4 == 1, "strip: percent-encoded parameter names are decoded before matching");
+    Check(PrivacyRules.StripTrackingParams("https://a.example/p?utmx=1&my_utm_source=2&ref=news&q=gclid", out var n5) == "https://a.example/p?utmx=1&my_utm_source=2&ref=news&q=gclid" && n5 == 0, "strip: near-miss names and values containing tracking words are not touched");
+    Check(PrivacyRules.StripTrackingParams("javascript:alert(1)?utm_source=x", out var n6) == "javascript:alert(1)?utm_source=x" && PrivacyRules.StripTrackingParams("file:///c:/a?utm_source=x", out _) == "file:///c:/a?utm_source=x" && PrivacyRules.StripTrackingParams(null, out _) == "" && n6 == 0, "strip: only http(s) URLs are ever rewritten");
+    Check(PrivacyRules.StripTrackingParams("https://a.example/p?a=1&mc_eid=9&b=2&_ga=3", out var n7) == "https://a.example/p?a=1&b=2" && n7 == 2, "strip: order of the remaining parameters is preserved");
+}
+
+Console.WriteLine();
 Console.WriteLine("=== Password vault (executed C#) ===");
 {
     var nowV = new DateTime(2026, 10, 7, 12, 0, 0, DateTimeKind.Utc);

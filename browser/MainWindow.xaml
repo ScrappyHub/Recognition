@@ -75,6 +75,17 @@
               <MenuItem Header="History"   Click="MenuHistory_Click"/>
               <MenuItem Header="Downloads" Click="MenuDownloads_Click"/>
               <MenuItem Header="Find in page" Click="MenuFind_Click"  InputGestureText="Ctrl+F"/>
+              <MenuItem Header="Page tools">
+                <MenuItem Header="Save page snapshot (.mhtml + evidence)" Click="MenuSnapshotPage_Click"/>
+                <MenuItem Header="Print..."        Click="MenuPrint_Click"/>
+                <MenuItem Header="Save page as PDF..." Click="MenuSavePdf_Click"/>
+                <MenuItem Header="Screenshot..."   Click="MenuScreenshot_Click"/>
+                <MenuItem Header="Edit this page (on/off)" Click="MenuEditPage_Click"/>
+                <MenuItem Header="View source (highlighted)" Click="MenuViewSource_Click"/>
+                <Separator/>
+                <MenuItem Header="Open file (PDF, image, code)..." Click="MenuOpenFile_Click"/>
+                <MenuItem Header="File tools (PDF and image)" Click="MenuTools_Click"/>
+              </MenuItem>
               <Separator/>
               <MenuItem Header="Zoom in"    Click="MenuZoomIn_Click"  InputGestureText="Ctrl++"/>
               <MenuItem Header="Zoom out"   Click="MenuZoomOut_Click" InputGestureText="Ctrl+-"/>

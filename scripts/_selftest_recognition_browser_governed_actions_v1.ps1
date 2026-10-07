@@ -31,8 +31,29 @@ if($setupGlue -match '_vault|PasswordVault|VaultEntry' -or $setupCore -match '_v
 if($pwGlue -notmatch 'PasswordRules\.MayFill'){ $bad += "Fill must be gated by PasswordRules.MayFill" }
 if(([regex]::Matches($pwGlue, 'MayFill')).Count -lt 2){ $bad += "Fill must re-check the origin at injection time" }
 if($pwGlue -match 'NavigationCompleted|DOMContentLoaded|WebResourceRequested'){ $bad += "vault must not auto-fill on page events" }
+# Local-only invariant: the privacy/tools/viewer/vault/setup modules must not open sockets, spawn processes or load code.
+foreach($f in @("PdfTools.cs","ImageMath.cs","CodeHighlighter.cs","PrivacyRules.cs","PasswordVault.cs","SetupSnapshot.cs","MainWindow.Tools.cs","MainWindow.Passwords.cs","MainWindow.Setup.cs")){
+  $p = Join-Path $bdir $f
+  if(-not (Test-Path -LiteralPath $p -PathType Leaf)){ $bad += ("missing source file: " + $f); continue }
+  $src = Get-Content -LiteralPath $p -Raw
+  if($src -match 'HttpClient|WebClient|WebRequest|TcpClient|UdpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create'){ $bad += ($f + " must stay local-only (no network clients, process launch or dynamic code loading)") }
+}
+$toolsGlue = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Tools.cs") -Raw
+if(([regex]::Matches($toolsGlue, 'would overwrite the original')).Count -lt 2){ $bad += "PDF and image tools must refuse to overwrite the original file" }
+foreach($m in [regex]::Matches($toolsGlue, '_actions\?\.Append\([^;]*;')){ if($m.Value -match '(?i)\btext\b|\bhtml\b|\bdata\b\s*\)'){ $bad += ("tools receipt must carry names/hashes only: " + $m.Value) } }
+$navGlue = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.xaml.cs") -Raw
+$iGate = $navGlue.IndexOf('MessageGate.Classify(tab.IsInternal')
+$iOpen = $navGlue.IndexOf('msg.StartsWith("open:")')
+$iSite = $navGlue.IndexOf('msg.StartsWith("site-perm:")')
+if($iGate -lt 0){ $bad += "OnWebMessage must gate every message with MessageGate.Classify(tab.IsInternal, source, msg) (web pages can call window.chrome.webview.postMessage)" }
+elseif(($iOpen -gt 0 -and $iGate -gt $iOpen) -or ($iSite -gt 0 -and $iGate -gt $iSite)){ $bad += "the MessageGate check must run BEFORE any command handler" }
+if($navGlue -notmatch 'DownloadRules\.Assess'){ $bad += "downloads must be assessed with DownloadRules.Assess" }
+if($navGlue -notmatch 'isTrusted'){ $bad += "keyboard shortcut script must ignore synthetic (untrusted) events" }
+if($navGlue -notmatch 'PrivacyRules\.HttpsUpgrade'){ $bad += "navigation must use PrivacyRules.HttpsUpgrade (parsed-host loopback check)" }
+if($navGlue -match 'StartsWith\("http://localhost"|StartsWith\("http://127\.0\.0\.1"'){ $bad += "regression: prefix-based localhost exemption (http://localhost.evil.com bypass) is back" }
 if($bad.Count -gt 0){ $bad | ForEach-Object { Write-Host ("BROWSER_TESTS_FAIL: " + $_) -ForegroundColor Red }; exit 1 }
 Write-Host "  ok  - static: receipts carry no secrets; setup never touches the vault; Fill is origin-gated twice and never event-driven"
+Write-Host "  ok  - static: privacy/tools/viewer/vault/setup modules are local-only; tools never overwrite originals; no prefix-based localhost exemption"
 
 $out = & dotnet run --project $proj -c Release 2>&1 | Out-String
 Write-Host $out

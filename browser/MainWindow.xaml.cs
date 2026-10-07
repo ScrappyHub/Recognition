@@ -52,6 +52,9 @@ namespace Recognition.Browser
         // Tracker/ad blocking (Brave-style)
         private readonly HashSet<string> _blockHosts = new(StringComparer.OrdinalIgnoreCase);
         private bool _blockingEnabled = true;
+        private bool _stripTracking = true, _sendGpc = true;   // privacy conveniences, persisted in browser_settings.json
+        private int _paramsStripped;
+        private DateTime _lastTabShortcutUtc = DateTime.MinValue;
         private int _blockedSession;
 
         // Private/incognito: a separate ephemeral profile in a temp folder, deleted on exit.
@@ -83,6 +86,7 @@ namespace Recognition.Browser
 
         private const string ShortcutScript = @"
 document.addEventListener('keydown',function(e){
+  if(!e.isTrusted)return;
   var k=(e.key||'').toLowerCase(); var m=null;
   if(e.ctrlKey&&e.shiftKey&&k==='n')m='newprivate';
   else if(e.ctrlKey&&k==='t')m='newtab';
@@ -130,6 +134,7 @@ document.addEventListener('keydown',function(e){
         private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
             RecordNetworkEnd();
+            CleanupViewerAll();
             foreach (var t in _tabs) { if (t.Private) { try { t.Web.Dispose(); } catch { } } }
             if (_privateDir != null) { try { if (Directory.Exists(_privateDir)) Directory.Delete(_privateDir, true); } catch { } }
         }
@@ -404,6 +409,7 @@ document.addEventListener('keydown',function(e){
         private void CloseTab(BrowserTab tab)
         {
             int idx = _tabs.IndexOf(tab);
+            CleanupViewer(tab);
             _tabs.Remove(tab);
             Tabs.Items.Remove(tab.Item);
             WebHost.Children.Remove(tab.Web);
@@ -450,7 +456,7 @@ document.addEventListener('keydown',function(e){
         private void SetHeader(BrowserTab tab, string title)
         {
             if (!tab.IsInternal && !string.IsNullOrWhiteSpace(title)) tab.CurrentTitle = title;
-            var label = tab.IsInternal ? InternalTitle(tab.Internal) : tab.CurrentTitle;
+            var label = tab.IsInternal && tab.Internal != "viewer" ? InternalTitle(tab.Internal) : tab.CurrentTitle;
             tab.Header.Text = (tab.Private ? "🕶 " : "") + label;
         }
 
@@ -461,6 +467,10 @@ document.addEventListener('keydown',function(e){
             "downloads" => "Downloads",
             "bookmarks" => "Bookmarks",
             "settings" => "Settings",
+            "network" => "Network",
+            "setup" => "Setup snapshot",
+            "passwords" => "Passwords",
+            "tools" => "Tools",
             _ => "Recognition"
         };
 
@@ -495,6 +505,8 @@ document.addEventListener('keydown',function(e){
 
         private void OnResourceRequested(BrowserTab tab, CoreWebView2WebResourceRequestedEventArgs e)
         {
+            // Global Privacy Control + Do Not Track on every http(s) request (cheap, standards-based opt-out signal).
+            if (_sendGpc) { try { var hs = e.Request.Headers; hs.SetHeader("Sec-GPC", "1"); hs.SetHeader("DNT", "1"); } catch { } }
             if (!_blockingEnabled || _env == null) return;
             try
             {
@@ -840,6 +852,8 @@ document.addEventListener('keydown',function(e){
                 using var doc = JsonDocument.Parse(File.ReadAllText(p));
                 var r = doc.RootElement;
                 if (r.TryGetProperty("blocking_enabled", out var b)) _blockingEnabled = b.GetBoolean();
+                if (r.TryGetProperty("strip_tracking", out var st) && (st.ValueKind == JsonValueKind.True || st.ValueKind == JsonValueKind.False)) _stripTracking = st.GetBoolean();
+                if (r.TryGetProperty("send_gpc", out var gp) && (gp.ValueKind == JsonValueKind.True || gp.ValueKind == JsonValueKind.False)) _sendGpc = gp.GetBoolean();
                 if (r.TryGetProperty("home_url", out var hu)) { var s = hu.GetString(); if (!string.IsNullOrWhiteSpace(s)) _homeUrl = s; }
                 if (r.TryGetProperty("appearance", out var ap) && ap.ValueKind == JsonValueKind.Object) _appearance.FromJson(ap);
             }
@@ -852,6 +866,7 @@ document.addEventListener('keydown',function(e){
                 var p = SettingsPath();
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
                 File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "," +
+                                          J("strip_tracking") + ":" + (_stripTracking ? "true" : "false") + "," + J("send_gpc") + ":" + (_sendGpc ? "true" : "false") + "," +
                                           J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
             }
             catch { }
@@ -1373,6 +1388,8 @@ document.addEventListener('keydown',function(e){
                 "network"   => NetworkHtml(),
                 "setup"     => SetupHtml(),
                 "passwords" => PasswordsHtml(),
+                "tools"     => ToolsHtml(),
+                "viewer"    => ViewerReloadHtml(tab),
                 _         => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
             try { tab.Web.CoreWebView2.NavigateToString(html); } catch (Exception ex) { Status("page error: " + ex.Message); }
@@ -1563,6 +1580,15 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                       "<div class='u'>Blocks known analytics, ad, and session-replay hosts at the network layer (" + _blockHosts.Count + " rules).</div></div>" +
                       "<div class='ts'><a class='btn" + (_blockingEnabled ? "" : " ghost") + "' onclick=\"send('toggle-blocking')\">" +
                       (_blockingEnabled ? "ON" : "OFF") + "</a></div></div>");
+            sb.Append("<div class='row'><div><div class='t'>Strip tracking parameters</div>" +
+                      "<div class='u'>Removes utm_*, fbclid, gclid and similar tracking parameters from links you open (not on redirects or form posts). " + _paramsStripped + " removed this session.</div></div>" +
+                      "<div class='ts'><a class='btn" + (_stripTracking ? "" : " ghost") + "' onclick=\"send('toggle-strip')\">" + (_stripTracking ? "ON" : "OFF") + "</a></div></div>");
+            sb.Append("<div class='row'><div><div class='t'>Global Privacy Control / Do Not Track</div>" +
+                      "<div class='u'>Sends Sec-GPC: 1 and DNT: 1 with every request. A legal opt-out signal in some regions; it does not stop fingerprinting.</div></div>" +
+                      "<div class='ts'><a class='btn" + (_sendGpc ? "" : " ghost") + "' onclick=\"send('toggle-gpc')\">" + (_sendGpc ? "ON" : "OFF") + "</a></div></div>");
+            sb.Append("<div class='row'><div><div class='t'>HTTPS-only</div>" +
+                      "<div class='u'>Plain http links are upgraded to https automatically (only loopback addresses such as localhost are exempt).</div></div>" +
+                      "<div class='ts'><span class='pill'>always on</span></div></div>");
             sb.Append("<div class='row'><div><div class='t'>Blocked this session</div><div class='u'>Across all tabs since launch.</div></div>" +
                       "<div class='ts'><span class='big'>" + _blockedSession + "</span></div></div>");
             sb.Append("<div class='row'><div><div class='t'>Local data encryption</div>" +
@@ -1754,7 +1780,23 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             try { msg = e.TryGetWebMessageAsString(); } catch { return; }
             if (string.IsNullOrEmpty(msg)) return;
 
-            if (msg.StartsWith("sc:")) { HandleShortcut(msg.Substring(3)); return; }
+            // SECURITY GATE: every page (including hostile websites and cross-origin iframes) can call
+            // window.chrome.webview.postMessage. Only the browser's own internal pages may send commands;
+            // web content may only send allowlisted keyboard shortcuts (rate-limited for tab-opening ones).
+            string msgSource = ""; try { msgSource = e.Source ?? ""; } catch { }
+            var verdict = MessageGate.Classify(tab.IsInternal, msgSource, msg);
+            if (verdict == MessageVerdict.Deny)
+            {
+                if (!tab.Private) _actions?.Append("bridge.refused", PasswordRules.OriginOf(msgSource) ?? "(non-web)");
+                return;
+            }
+            if (verdict == MessageVerdict.Shortcut)
+            {
+                var sc = msg.Substring(3);
+                if (MessageGate.IsTabShortcut(sc) && (DateTime.UtcNow - _lastTabShortcutUtc).TotalMilliseconds < 600) return;
+                if (MessageGate.IsTabShortcut(sc)) _lastTabShortcutUtc = DateTime.UtcNow;
+                HandleShortcut(sc); return;
+            }
             if (msg.StartsWith("open:")) { NavigateTab(tab, msg.Substring(5)); return; }
             if (msg.StartsWith("rmbookmark:"))
             {
@@ -1771,6 +1813,12 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                     if (tab.Internal == "settings") LoadInternal(tab, "settings");
                     Status("tracker/ad blocking " + (_blockingEnabled ? "ON" : "OFF"));
                     break;
+                case "toggle-strip":
+                    _stripTracking = !_stripTracking; SaveSettings(); _actions?.Append("privacy.strip_params." + (_stripTracking ? "on" : "off"));
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings"); break;
+                case "toggle-gpc":
+                    _sendGpc = !_sendGpc; SaveSettings(); _actions?.Append("privacy.gpc." + (_sendGpc ? "on" : "off"));
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings"); break;
                 case "clear-history":
                     _history.Clear();
                     _actions?.Append("history.clear");
@@ -1817,6 +1865,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             else if (msg.StartsWith("net-")) HandleNetMessage(msg);
             else if (msg.StartsWith("setup-") && tab.Internal == "setup") HandleSetupMessage(msg);
             else if (msg.StartsWith("pw-") && tab.Internal == "passwords") HandlePwMessage(msg);
+            else if (msg.StartsWith("tools-") && tab.Internal == "tools") HandleToolsMessage(msg);
             else if (msg.StartsWith("appearance-set:"))
             {
                 var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);
@@ -1961,6 +2010,22 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             try
             {
                 var op = e.DownloadOperation;
+                // Drive-by protection: files that can run code, or whose name hides its real type, need an explicit yes.
+                var risk = DownloadRules.Assess(Path.GetFileName(op.ResultFilePath));
+                if (risk != DownloadRisk.None)
+                {
+                    var fname = Path.GetFileName(op.ResultFilePath);
+                    var answer = MessageBox.Show(this,
+                        (risk == DownloadRisk.DeceptiveName ? "This download has a file name that disguises its real type." : "This download is a file type that can run code on your PC.") +
+                        "\n\nFile: " + fname + "\nFrom: " + (TryHost(op.Uri) ?? op.Uri) + "\n\nOnly keep it if you expected this download and trust the site. Keep it?",
+                        "Recognition — risky download", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+                    if (answer != MessageBoxResult.Yes)
+                    {
+                        e.Cancel = true; _actions?.Append("download.refused", op.Uri); Status("download refused: " + fname);
+                        return;
+                    }
+                    _actions?.Append("download.risky_allowed", op.Uri);
+                }
                 var rec = new DownloadRec { Url = op.Uri, Path = op.ResultFilePath, State = op.State.ToString(), Ts = Iso(DateTime.UtcNow) };
                 _downloads.Add(rec);
                 SaveDownloads();
@@ -2021,13 +2086,27 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 
         private void OnNavStarting(BrowserTab tab, CoreWebView2NavigationStartingEventArgs e)
         {
-            if (e.Uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !e.Uri.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase) &&
-                !e.Uri.StartsWith("http://127.0.0.1", StringComparison.OrdinalIgnoreCase))
+            // HTTPS-only: plain http to anything but loopback is upgraded (host parsed properly, so
+            // http://localhost.evil.com is NOT treated as local).
+            var upgraded = PrivacyRules.HttpsUpgrade(e.Uri);
+            if (upgraded != null)
             {
                 e.Cancel = true;
-                NavigateTab(tab, "https://" + e.Uri.Substring("http://".Length));
+                NavigateTab(tab, upgraded);
                 return;
+            }
+            // Strip known tracking parameters (utm_*, fbclid, gclid, ...). Never on redirects (OAuth/SSO flows)
+            // or form posts, so nothing functional is rewritten.
+            if (_stripTracking && !e.IsRedirected && !e.RequestHeaders.Contains("Content-Type"))
+            {
+                var clean = PrivacyRules.StripTrackingParams(e.Uri, out var nStripped);
+                if (nStripped > 0)
+                {
+                    e.Cancel = true; _paramsStripped += nStripped;
+                    if (!tab.Private) _actions?.Append("privacy.strip_params", e.Uri);   // private tabs leave no persisted trace
+                    try { tab.Web.CoreWebView2.Navigate(clean); } catch { }
+                    return;
+                }
             }
             if (e.Uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                 e.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
@@ -2070,7 +2149,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
             {
                 var name = input.Substring("recognition:".Length).ToLowerInvariant();
-                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "start" ? name : "start");
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "start" ? name : "start");
                 return;
             }
             tab.Internal = "";

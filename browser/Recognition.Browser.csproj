@@ -13,12 +13,20 @@
     <RootNamespace>Recognition.Browser</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>recognition.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Product>Recognition</Product>
+    <Company>ScrappyHub</Company>
+    <Description>Recognition governed browser</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2739.15" />
     <!-- Windows DPAPI (per-user at-rest encryption for history/bookmarks/downloads) -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- Offline PDF page tools (extract/merge/split/rotate/reorder). MIT license, pinned version. -->
+    <PackageReference Include="PDFsharp" Version="6.2.4" />
   </ItemGroup>
 
   <ItemGroup>
