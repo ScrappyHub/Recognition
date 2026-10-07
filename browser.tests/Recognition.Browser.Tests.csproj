@@ -21,6 +21,7 @@
     <Compile Include="..\browser\Appearance.cs" Link="Appearance.cs" />
     <Compile Include="..\browser\NetworkInfo.cs" Link="NetworkInfo.cs" />
     <Compile Include="..\browser\SetupSnapshot.cs" Link="SetupSnapshot.cs" />
+    <Compile Include="..\browser\PasswordVault.cs" Link="PasswordVault.cs" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 

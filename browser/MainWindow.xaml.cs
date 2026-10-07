@@ -1372,6 +1372,7 @@ document.addEventListener('keydown',function(e){
                 "settings"  => SettingsHtml(),
                 "network"   => NetworkHtml(),
                 "setup"     => SetupHtml(),
+                "passwords" => PasswordsHtml(),
                 _         => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
             try { tab.Web.CoreWebView2.NavigateToString(html); } catch (Exception ex) { Status("page error: " + ex.Message); }
@@ -1815,6 +1816,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             }
             else if (msg.StartsWith("net-")) HandleNetMessage(msg);
             else if (msg.StartsWith("setup-") && tab.Internal == "setup") HandleSetupMessage(msg);
+            else if (msg.StartsWith("pw-") && tab.Internal == "passwords") HandlePwMessage(msg);
             else if (msg.StartsWith("appearance-set:"))
             {
                 var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);
@@ -2068,7 +2070,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
             {
                 var name = input.Substring("recognition:".Length).ToLowerInvariant();
-                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "start" ? name : "start");
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "start" ? name : "start");
                 return;
             }
             tab.Internal = "";

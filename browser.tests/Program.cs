@@ -255,6 +255,74 @@ Console.WriteLine("=== Setup snapshot (executed C#) ===");
 }
 
 Console.WriteLine();
+Console.WriteLine("=== Password vault (executed C#) ===");
+{
+    var nowV = new DateTime(2026, 10, 7, 12, 0, 0, DateTimeKind.Utc);
+    // generator
+    var gen = PasswordGenerator.Generate(24);
+    Check(gen.Length == 24 && gen.Any(char.IsLower) && gen.Any(char.IsUpper) && gen.Any(char.IsDigit) && gen.Any(c => PasswordGenerator.Symbols.Contains(c)), "generator: requested length and at least one of each chosen character type");
+    Check(Enumerable.Range(0, 200).All(_ => { var x = PasswordGenerator.Generate(8); return x.Any(char.IsLower) && x.Any(char.IsUpper) && x.Any(char.IsDigit) && x.Any(c => PasswordGenerator.Symbols.Contains(c)); }), "generator: 200 minimum-length passwords all contain every chosen type");
+    Check(Enumerable.Range(0, 200).All(_ => PasswordGenerator.Generate(40).All(c => PasswordGenerator.Ambiguous.IndexOf(c) < 0)), "generator: ambiguous characters (O 0 o I l 1 | quotes) excluded when asked");
+    Check(Enumerable.Range(0, 100).All(_ => PasswordGenerator.Generate(30, true, false, true, false).All(c => char.IsLower(c) || char.IsDigit(c))), "generator: unchecked types never appear");
+    Check(Enumerable.Range(0, 100).Select(_ => PasswordGenerator.Generate(20)).Distinct().Count() == 100, "generator: 100 passwords are all distinct");
+    var digitsOnly = string.Concat(Enumerable.Range(0, 100).Select(_ => PasswordGenerator.Generate(128, false, false, true, false, false)));
+    var counts = digitsOnly.GroupBy(c => c).ToDictionary(x => x.Key, x => x.Count());
+    Check(counts.Count == 10 && counts.Values.All(n => n > 1100 && n < 1460), "generator: digit frequencies over 12,800 draws are near-uniform (expected 1280 each)");
+    Check(Throws(() => PasswordGenerator.Generate(7)) && Throws(() => PasswordGenerator.Generate(129)) && Throws(() => PasswordGenerator.Generate(16, false, false, false, false)), "generator: length outside 8..128 and no character types are refused");
+    bool Throws(Action a) { try { a(); return false; } catch (ArgumentException) { return true; } }
+
+    // origins
+    Check(PasswordRules.NormalizeOrigin(" Example.COM ") == "example.com" && PasswordRules.NormalizeOrigin("example.com:8443") == "example.com:8443", "origin: trimmed, lower-cased, port kept");
+    Check(new[] { "https://example.com", "example.com/path", "exa mple.com", "", "-bad.com", "example.com:99999", "a@b.com", "ex\u0001.com" }.All(s => PasswordRules.NormalizeOrigin(s) == null), "origin: scheme, path, spaces, userinfo, bad port, control characters all rejected");
+    Check(PasswordRules.OriginOf("https://Example.com/login?x=1") == "example.com" && PasswordRules.OriginOf("https://example.com:8443/") == "example.com:8443" && PasswordRules.OriginOf("http://example.com:80/") == "example.com", "origin of URL: default ports dropped, others kept");
+    Check(PasswordRules.OriginOf("https://example.com@evil.com/") == null && PasswordRules.OriginOf("javascript:alert(1)") == null && PasswordRules.OriginOf("file:///c:/x") == null && PasswordRules.OriginOf(null) == null, "origin of URL: userinfo trick, javascript:, file:, null refused");
+    Check(PasswordRules.MayFill("example.com", "https://example.com/login"), "fill: exact https origin allowed");
+    Check(!PasswordRules.MayFill("example.com", "https://login.example.com/") && !PasswordRules.MayFill("example.com", "https://example.com.evil.com/") && !PasswordRules.MayFill("example.com", "https://evilexample.com/") && !PasswordRules.MayFill("example.com", "https://example.com:8443/"), "fill: subdomain, suffix look-alike, prefix look-alike and other port all refused");
+    Check(!PasswordRules.MayFill("example.com", "http://example.com/") && !PasswordRules.MayFill("example.com", "https://example.com@evil.com/"), "fill: plain http on the internet and userinfo trick refused");
+    Check(PasswordRules.MayFill("localhost:3000", "http://localhost:3000/app") && !PasswordRules.MayFill("localhost:3000", "http://localhost:3001/"), "fill: http allowed only for localhost, and the port must match");
+
+    // vault
+    var vs = new Dictionary<string, string>();
+    PasswordVault NewVault() => new PasswordVault("mem://vault", p => vs.TryGetValue(p, out var v) ? v : "", (p, t) => vs[p] = t);
+    PasswordVault Loaded() { var x = NewVault(); x.Load(); return x; }
+    var vault = NewVault();
+    Check(vault.Load() == 0 && vault.Entries.Count == 0, "vault: empty store loads as empty");
+    Check(vault.Add("Example.com", "alice", "S3cret!pass-word", "note", nowV, out var e1) == null && e1 != null && e1.Origin == "example.com" && e1.Id.Length == 24, "vault: add normalises the origin and assigns a random id");
+    Check(vault.Add("example.com", "alice", "other", "", nowV, out _) != null, "vault: duplicate (site, username) refused");
+    Check(vault.Add("example.com", "bob", "pw-for-bob-123!", "", nowV, out var e2) == null, "vault: a second username on the same site is fine");
+    Check(vault.Add("https://example.com", "x", "y", "", nowV, out _) != null && vault.Add("example.com", "x", "", "", nowV, out _) != null && vault.Add("example.com", "x\u0000", "y", "", nowV, out _) != null && vault.Add("example.com", "x", "y", new string('n', 3000), nowV, out _) != null, "vault: bad origin, empty password, control char, oversized note all refused");
+    var v2 = NewVault();
+    Check(v2.Load() == 0 && v2.Entries.Count == 2 && v2.Get(e1!.Id)!.Password == "S3cret!pass-word" && v2.Get(e1.Id)!.Note == "note", "vault: entries survive a reload from storage");
+    Check(v2.ForPage("https://example.com/login").Count == 2 && v2.ForPage("https://login.example.com/").Count == 0 && v2.ForPage("http://example.com/").Count == 0, "vault: ForPage returns only exact-origin entries");
+    Check(v2.Update(e2!.Id, "bob", "NewPass-987654!x", "", nowV.AddMinutes(1)) == null && Loaded().Get(e2.Id)!.Password == "NewPass-987654!x", "vault: update persists");
+    Check(v2.Update(e2.Id, "alice", "NewPass-987654!x", "", nowV) != null && v2.Update("nope", "a", "b", "", nowV) != null, "vault: update cannot collide with another username, unknown id refused");
+    Check(v2.Remove(e1.Id) && !v2.Remove(e1.Id) && Loaded().Entries.Count == 1, "vault: remove persists, removing twice is a no-op");
+
+    // damaged storage
+    vs["mem://vault"] = "{ not json";
+    var dmg = NewVault();
+    Check(dmg.Load() == 1 && dmg.Entries.Count == 0, "vault: unreadable storage loads empty and reports the damage instead of throwing");
+    vs["mem://vault"] = "{\"schema\":\"recognition.vault.v1\",\"entries\":[{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaa\",\"origin\":\"ok.example\",\"username\":\"u\",\"password\":\"pw\"},{\"id\":\"short\",\"origin\":\"ok.example\",\"password\":\"pw\"},{\"id\":\"bbbbbbbbbbbbbbbbbbbbbbbb\",\"origin\":\"https://bad/\",\"password\":\"pw\"},{\"id\":\"cccccccccccccccccccccccc\",\"origin\":\"ok.example\",\"password\":\"\"},{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaa\",\"origin\":\"dup.example\",\"password\":\"pw\"}]}";
+    var part = NewVault();
+    Check(part.Load() == 4 && part.Entries.Count == 1 && part.Entries[0].Origin == "ok.example", "vault: damaged records (short id, bad origin, empty password, duplicate id) skipped, the good one kept");
+
+    // strength and audit
+    Check(PasswordRules.Strength("password1!") == "weak" && PasswordRules.Strength("aaaaaaaaaaaa") == "weak" && PasswordRules.Strength("") == "weak", "strength: common words, heavy repetition and empty are weak");
+    Check(PasswordRules.Strength("Tr0ub4dor&3") != "weak" && PasswordRules.Strength(PasswordGenerator.Generate(20)) == "strong", "strength: mixed 11-char is not weak, a generated 20-char password is strong");
+    var av = new PasswordVault("mem://audit", _ => "", (_, __) => { });
+    av.Add("a.example", "u", "Zq7!mK2-vXw9#Lp4", "", nowV, out var a1); av.Add("b.example", "u", "Zq7!mK2-vXw9#Lp4", "", nowV, out var a2);
+    av.Add("c.example", "u", "123456", "", nowV, out var a3); av.Add("d.example", "u", PasswordGenerator.Generate(24), "", nowV, out var a4);
+    var aud = av.Audit();
+    Check(aud.Count(i => i.Kind == "reused") == 2 && aud.Any(i => i.Id == a1!.Id && i.Kind == "reused") && aud.Any(i => i.Id == a2!.Id && i.Kind == "reused"), "audit: reused password flagged on both entries");
+    Check(aud.Any(i => i.Id == a3!.Id && i.Kind == "weak") && !aud.Any(i => i.Id == a4!.Id), "audit: weak password flagged, strong unique one is clean");
+
+    // fill script
+    var fs = FillScript.Build("al\"ice</script>'", "p\\w'd\u2028\"x");
+    Check(!fs.Contains('\n') && fs.Contains("al\\u0022ice") && fs.Contains("\\u003C/script\\u003E") && fs.EndsWith(")"), "fill script: a single line; values are JSON-escaped literals (</script>, quotes, backslash, U+2028 cannot break out)");
+    Check(fs.Contains("input[type=password]") && fs.Contains("dispatchEvent"), "fill script: targets password fields and notifies the page");
+}
+
+Console.WriteLine();
 Console.WriteLine($"checks passed: {pass}  failed: {fail}");
 if (fail > 0) { Console.Error.WriteLine("BROWSER_GOVERNED_ACTIONS_TESTS_FAIL: " + fail); return 1; }
 Console.WriteLine("SELFTEST_RECOGNITION_BROWSER_GOVERNED_ACTIONS_V1_OK");

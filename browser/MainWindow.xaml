@@ -81,6 +81,7 @@
               <MenuItem Header="Reset zoom" Click="MenuZoomReset_Click" InputGestureText="Ctrl+0"/>
               <Separator/>
               <MenuItem Header="Network"   Click="MenuNetwork_Click"/>
+              <MenuItem Header="Passwords" Click="MenuPasswords_Click"/>
               <MenuItem Header="Setup snapshot" Click="MenuSetup_Click"/>
               <MenuItem Header="Settings"  Click="MenuSettings_Click"/>
               <MenuItem Header="Export Session (governed packet)" Click="Export_Click"/>

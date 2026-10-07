@@ -19,6 +19,21 @@ if(-not $dotnet){ Write-Host "BROWSER_TESTS_FAIL: .NET SDK not found (needed to 
 $proj = Join-Path (Join-Path $RepoRoot "browser.tests") "Recognition.Browser.Tests.csproj"
 if(-not (Test-Path -LiteralPath $proj -PathType Leaf)){ Write-Host ("BROWSER_TESTS_FAIL: missing " + $proj) -ForegroundColor Red; exit 1 }
 
+# Static source invariants for the password vault + setup snapshot (the parts the C# tests cannot execute: WPF glue).
+$bdir = Join-Path $RepoRoot "browser"
+$pwGlue = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Passwords.cs") -Raw
+$setupGlue = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Setup.cs") -Raw
+$setupCore = Get-Content -LiteralPath (Join-Path $bdir "SetupSnapshot.cs") -Raw
+$bad = @()
+foreach($m in [regex]::Matches($pwGlue, '_actions\?\.Append\([^;]*;')){ if($m.Value -match '(?i)\.Password|\bpw\b|secret'){ $bad += ("receipt carries a secret: " + $m.Value) } }
+foreach($m in [regex]::Matches($setupGlue, '_actions\?\.Append\([^;]*;')){ if($m.Value -match '(?i)\bcode\b|\bblob\b|\bpayload\b'){ $bad += ("setup receipt carries code/blob: " + $m.Value) } }
+if($setupGlue -match '_vault|PasswordVault|VaultEntry' -or $setupCore -match '_vault|PasswordVault|VaultEntry'){ $bad += "setup snapshot code must never reference the password vault" }
+if($pwGlue -notmatch 'PasswordRules\.MayFill'){ $bad += "Fill must be gated by PasswordRules.MayFill" }
+if(([regex]::Matches($pwGlue, 'MayFill')).Count -lt 2){ $bad += "Fill must re-check the origin at injection time" }
+if($pwGlue -match 'NavigationCompleted|DOMContentLoaded|WebResourceRequested'){ $bad += "vault must not auto-fill on page events" }
+if($bad.Count -gt 0){ $bad | ForEach-Object { Write-Host ("BROWSER_TESTS_FAIL: " + $_) -ForegroundColor Red }; exit 1 }
+Write-Host "  ok  - static: receipts carry no secrets; setup never touches the vault; Fill is origin-gated twice and never event-driven"
+
 $out = & dotnet run --project $proj -c Release 2>&1 | Out-String
 Write-Host $out
 if($LASTEXITCODE -ne 0){ Write-Host "BROWSER_TESTS_FAIL: dotnet run exited with code $LASTEXITCODE" -ForegroundColor Red; exit 1 }
