@@ -63,6 +63,15 @@ if($sw -match 'HttpClient|WebClient|WebRequest|Process\.Start|ProcessStartInfo|F
 if($sb -notmatch 'secret_release_to_external_runtime' -or $sb -notmatch 'hard_runtime_dependency' -or $sb -notmatch 'must_not_fail_if_absent'){ $bad += "the SoteriaVault link must refuse a contract that allows secret release or hard dependencies" }
 if($sw -notmatch 'soteria\.check'){ $bad += "SoteriaVault checks must be receipted (soteria.check)" }
 if($sw -notmatch 'IsSafeRoot'){ $bad += "the SoteriaVault folder must pass SoteriaBridge.IsSafeRoot before use" }
+# Launch handling: addresses from other programs are validated, the pipe is current-user only, internal pages cannot be reached from the web.
+$la = Get-Content -LiteralPath (Join-Path $bdir "LaunchArgs.cs") -Raw
+$ap = Get-Content -LiteralPath (Join-Path $bdir "App.xaml.cs") -Raw
+$ml = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Launch.cs") -Raw
+if($la -match 'HttpClient|Process\.Start|System\.Text\.RegularExpressions'){ $bad += "LaunchArgs.cs must stay pure" }
+if($ap -notmatch 'PipeOptions\.CurrentUserOnly'){ $bad += "the single-instance pipe must be restricted to the current user (PipeOptions.CurrentUserOnly)" }
+if($ap -notmatch 'LaunchArgs\.Parse'){ $bad += "addresses received over the pipe must be validated with LaunchArgs.Parse" }
+if($ml -notmatch 'App\.PendingUrls'){ $bad += "addresses that arrive before start-up finishes must be queued" }
+if($navGlue -notmatch '(?s)StartsWith\("recognition:".{0,200}?e\.Cancel = true;.{0,40}?if \(tab\.IsInternal\)'){ $bad += "recognition: links must work only from the browser's own pages" }
 if($fe -match 'HttpClient|WebClient|WebRequest|TcpClient|UdpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|System\.Text\.RegularExpressions'){ $bad += "FilterEngine.cs must stay local-only and regex-free (no network, processes, dynamic code, or backtracking regex on hostile lists)" }
 if($fg -match 'Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|TcpClient|UdpClient|WebClient'){ $bad += "MainWindow.Filters.cs may only use HttpClient for the list updater" }
 if(([regex]::Matches($fg, 'new HttpClient\(')).Count -ne 1){ $bad += "exactly one HttpClient (the user-initiated list updater) is allowed in MainWindow.Filters.cs" }

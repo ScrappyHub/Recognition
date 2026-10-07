@@ -72,7 +72,7 @@ $icon   = $exe + ",0"
 $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Recognition"
 New-Item -Path $key -Force | Out-Null
 New-ItemProperty -Path $key -Name "DisplayName"     -Value "Recognition"          -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $key -Name "DisplayVersion"  -Value "1.2.0"                 -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $key -Name "DisplayVersion"  -Value "1.3.1"                 -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name "Publisher"       -Value "ScrappyHub"            -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name "DisplayIcon"     -Value $icon                   -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name "InstallLocation" -Value $InstallDir             -PropertyType String -Force | Out-Null
@@ -82,6 +82,32 @@ if(Test-Path -LiteralPath $uninst){
   $ps = if(Get-Command pwsh -ErrorAction SilentlyContinue){ "pwsh" } else { "powershell" }
   New-ItemProperty -Path $key -Name "UninstallString" -Value ("`"" + $ps + "`" -NoProfile -ExecutionPolicy Bypass -File `"" + $uninst + "`"") -PropertyType String -Force | Out-Null
 }
+
+# --- default-browser capability ----------------------------------------------
+# Lists Recognition under Settings > Default apps (http, https, .htm, .html, .xhtml). Windows does not let a program make itself the
+# default: the person chooses it there (Settings > Recognition > Open Windows Default apps). Per-user keys only.
+function Reg-Default([string]$path,[string]$value){ New-Item -Path $path -Force | Out-Null; Set-ItemProperty -Path $path -Name "(Default)" -Value $value }
+function Reg-Value([string]$path,[string]$name,[string]$value){ New-Item -Path $path -Force | Out-Null; New-ItemProperty -Path $path -Name $name -Value $value -PropertyType String -Force | Out-Null }
+$openCmd = '"' + $exe + '" "%1"'
+foreach($pid_ in @(@("RecognitionURL","Recognition URL"),@("RecognitionHTML","Recognition HTML Document"))){
+  $c = "HKCU:\Software\Classes\" + $pid_[0]
+  Reg-Default $c $pid_[1]
+  if($pid_[0] -eq "RecognitionURL"){ Reg-Value $c "URL Protocol" "" }
+  Reg-Default ($c + "\DefaultIcon") ($exe + ",0")
+  Reg-Default ($c + "\shell\open\command") $openCmd
+}
+$ci = "HKCU:\Software\Clients\StartMenuInternet\Recognition"
+Reg-Default $ci "Recognition"
+Reg-Default ($ci + "\DefaultIcon") ($exe + ",0")
+Reg-Default ($ci + "\shell\open\command") ('"' + $exe + '"')
+Reg-Value ($ci + "\Capabilities") "ApplicationName" "Recognition"
+Reg-Value ($ci + "\Capabilities") "ApplicationDescription" "Governed, private browser"
+Reg-Value ($ci + "\Capabilities") "ApplicationIcon" ($exe + ",0")
+Reg-Value ($ci + "\Capabilities\URLAssociations") "http" "RecognitionURL"
+Reg-Value ($ci + "\Capabilities\URLAssociations") "https" "RecognitionURL"
+foreach($ext in @(".htm",".html",".xhtml")){ Reg-Value ($ci + "\Capabilities\FileAssociations") $ext "RecognitionHTML" }
+Reg-Value "HKCU:\Software\RegisteredApplications" "Recognition" "Software\Clients\StartMenuInternet\Recognition\Capabilities"
+Write-Host "  default-browser: Recognition is now listed in Windows Default apps (you choose it there)"
 
 # --- dependency hints (non-fatal) -------------------------------------------
 if(-not (Get-Command pwsh -ErrorAction SilentlyContinue)){

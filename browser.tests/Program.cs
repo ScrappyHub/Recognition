@@ -897,6 +897,25 @@ Console.WriteLine("=== Password vault (executed C#) ===");
         Check(!SoteriaBridge.IsSafeRoot(svBad2), "soteria: refused folder #" + Array.IndexOf(svBadList, svBad2));
 }
 
+// ---- addresses that arrive from other programs (default browser, second launch) -----------------------------------------------------
+{
+    Func<string, bool> laExists = pth => pth == "C:\\pages\\a.html" || pth == "C:\\pages\\b.txt" || pth == "C:\\pages\\c.HTM";
+    Check(LaunchArgs.Parse("https://example.com/a?b=1#c") == "https://example.com/a?b=1#c", "launch: an https link is accepted unchanged");
+    Check(LaunchArgs.Parse("  HTTP://Example.COM  ") == "http://example.com/", "launch: http link is trimmed and normalised");
+    foreach (var laBad in new[] { "https://bank.com@evil.com/", "https://someone@example.com/", "javascript:alert(1)", "data:text/html,x", "ftp://example.com/x", "file:///C:/pages/a.html",
+                                  "ms-msdt:/id", "search-ms:query=x", "mailto:a@b.c", "\\\\srv\\share\\a.html", "http://", "https:///x", "about:blank", "", "   ", "not a url", "https://a.example/\u0001x", "https://a.example/\u007fx" })
+        Check(LaunchArgs.Parse(laBad, laExists) == null, "launch: refused " + (laBad.Length > 28 ? laBad.Substring(0, 28) : laBad).Replace("\u0001", "\\x01").Replace("\u007f", "\\x7f"));
+    Check(LaunchArgs.Parse("https://a.example/" + new string('a', 5000)) == null, "launch: an oversized address is refused");
+    Check(LaunchArgs.Parse(null) == null, "launch: null is refused");
+    Check(LaunchArgs.Parse("C:\\pages\\a.html", laExists) == "file:///C:/pages/a.html", "launch: an existing local .html file opens as a file address");
+    Check(LaunchArgs.Parse("C:\\pages\\c.HTM", laExists) != null, "launch: the extension check ignores case");
+    Check(LaunchArgs.Parse("C:\\pages\\b.txt", laExists) == null && LaunchArgs.Parse("C:\\pages\\zzz.html", laExists) == null && LaunchArgs.Parse("C:\\pages\\a.html") == null, "launch: wrong extension, missing file, or no file check -> refused");
+    Check(LaunchArgs.FromArgs(new[] { "--flag", "/x", "https://ok.example/" }) == "https://ok.example/", "launch: switches are skipped, the first good address wins");
+    Check(LaunchArgs.FromArgs(new[] { "javascript:1", "https://a.example/", "https://b.example/" }) == "https://a.example/", "launch: a bad argument is skipped, not trusted");
+    Check(LaunchArgs.FromArgs(new string[0]) == null && LaunchArgs.FromArgs(null) == null && LaunchArgs.FromArgs(new[] { "-x", "/y" }) == null, "launch: no address -> null");
+    Check(LaunchArgs.FromArgs(Enumerable.Repeat("junk", 40).Concat(new[] { "https://late.example/" }).ToArray()) == null, "launch: only the first 16 arguments are looked at");
+}
+
 // ---- stress: the filter engine at real-list scale, adversarial input, and PDF/extension abuse ------------------------------------
 {
     var stSw = System.Diagnostics.Stopwatch.StartNew();

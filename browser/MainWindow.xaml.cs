@@ -216,10 +216,14 @@ document.addEventListener('keydown',function(e){
                     GovText.Text = "LOCKED";
                     GovText.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x6C));
                     Status("LOCKED: startup verification failed — see page");
+                    App.HideSplash();
                     return;
                 }
 
                 await OpenNewTabAsync();
+                _startupDone = true;
+                await DrainOutsideUrlsAsync();
+                App.HideSplash();
                 CheckRuntimeVersion();
                 UpdateShield();
                 UpdateVpn();
@@ -227,7 +231,7 @@ document.addEventListener('keydown',function(e){
                 if (_extEnabled && Active != null) await LoadExtensionsAsync(Active);
                 Status("locked startup OK — governed profile: " + userData);
             }
-            catch (Exception ex) { ShowFatal("Startup error", ex.ToString()); }
+            catch (Exception ex) { App.HideSplash(); ShowFatal("Startup error", ex.ToString()); }
         }
 
         // ---- tab lifecycle ------------------------------------------------------
@@ -455,15 +459,27 @@ document.addEventListener('keydown',function(e){
                 if (!t.Ready) continue;
                 try
                 {
-                    if (on) t.Web.CoreWebView2.Resume();
+                    if (on) { SetMemoryLevel(t.Web.CoreWebView2, false); t.Web.CoreWebView2.Resume(); }
                     else _ = SuspendTab(t);
                 }
                 catch { }
             }
         }
+        // Background tabs ask the engine to keep a low memory target (it trims caches and discards decoded images) on top of being
+        // suspended. Set through reflection so an engine SDK without the property can never stop the browser from compiling or starting.
+        private static void SetMemoryLevel(Microsoft.Web.WebView2.Core.CoreWebView2 core, bool low)
+        {
+            try
+            {
+                var prop = core.GetType().GetProperty("MemoryUsageTargetLevel");
+                if (prop == null || !prop.PropertyType.IsEnum) return;
+                prop.SetValue(core, Enum.Parse(prop.PropertyType, low ? "Low" : "Normal", true));
+            }
+            catch { }
+        }
         private static async Task SuspendTab(BrowserTab t)
         {
-            try { await t.Web.CoreWebView2.TrySuspendAsync(); } catch { }
+            try { SetMemoryLevel(t.Web.CoreWebView2, true); await t.Web.CoreWebView2.TrySuspendAsync(); } catch { }
         }
 
         private void SetHeader(BrowserTab tab, string title)
@@ -1227,6 +1243,7 @@ document.addEventListener('keydown',function(e){
             StarBtn.Content = on ? "★" : "☆";
             StarBtn.Foreground = new SolidColorBrush(on ? Color.FromRgb(0xF2, 0xC1, 0x4E) : Color.FromRgb(0xC7, 0xCC, 0xD4));
             StarBtn.IsEnabled = !tab.IsInternal && !tab.Private;
+            StarBtn.Visibility = StarBtn.IsEnabled && !string.IsNullOrEmpty(tab.CurrentUrl) ? Visibility.Visible : Visibility.Collapsed;   // nothing to bookmark on blank, internal and private tabs
         }
 
         // ---- locked startup preflight (worker thread) ---------------------------
@@ -1388,31 +1405,56 @@ document.addEventListener('keydown',function(e){
 
         private static string StartPageHtml()
         {
-            return @"<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><title>Recognition — Start</title><style>
+            // One small self-contained page: inline SVG, no web fonts, no images, no external requests.
+            return @"<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><title>Recognition</title><style>
+:root{--bg:#111318;--panel:#181b21;--line:#262a33;--txt:#e9ebef;--mut:#818998;--acc:#4c9bf0;--acc2:#7c6cf0}
+*{box-sizing:border-box}
 html,body{height:100%;margin:0}
-body{font-family:'Segoe UI',Arial,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#242833,#191c22 60%);
-     color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center}
-.logo{font-size:44px;line-height:1}
-h1{font-weight:600;letter-spacing:.5px;margin:14px 0 2px;font-size:26px}
-.sub{color:#7f8794;margin-bottom:30px;font-size:12.5px}
-form{display:flex;width:min(640px,82vw);box-shadow:0 8px 30px rgba(0,0,0,.35);border-radius:10px}
-input{flex:1;padding:15px 18px;border:1px solid #333844;border-right:none;border-radius:10px 0 0 10px;
-      background:#0e1116;color:#e8e8e8;font-size:15px;outline:none}
-input::placeholder{color:#5c626d}
-button{padding:0 26px;border:1px solid #2b6cb0;border-radius:0 10px 10px 0;background:#2b6cb0;color:#fff;font-size:15px;cursor:pointer}
-button:hover{background:#3480ce}
-.pills{margin-top:26px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
-.pill{border:1px solid #2c313b;background:#1c2027;color:#9aa1ac;border-radius:999px;padding:6px 12px;font-size:11.5px}
-.foot{position:fixed;bottom:18px;color:#4f545e;font-size:11px}
+body{font-family:'Segoe UI Variable Text','Segoe UI',Arial,sans-serif;color:var(--txt);background:
+  radial-gradient(900px 480px at 50% -8%,rgba(76,155,240,.16),transparent 70%),
+  radial-gradient(700px 420px at 85% 105%,rgba(124,108,240,.12),transparent 70%),var(--bg);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100%;padding:24px}
+.mark{width:68px;height:68px;filter:drop-shadow(0 6px 22px rgba(76,155,240,.35))}
+h1{font-weight:600;font-size:34px;letter-spacing:.4px;margin:16px 0 4px}
+.tag{color:var(--mut);font-size:13.5px;margin-bottom:34px}
+.hello{color:var(--mut);font-size:12.5px;height:16px;margin-bottom:10px}
+form{width:min(660px,86vw);position:relative}
+input{width:100%;padding:16px 56px 16px 52px;background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:999px;
+  font-size:15.5px;outline:none;transition:border-color .15s,box-shadow .15s}
+input::placeholder{color:#5d6471}
+input:focus{border-color:var(--acc);box-shadow:0 0 0 4px rgba(76,155,240,.16)}
+.si{position:absolute;left:19px;top:50%;transform:translateY(-50%);width:18px;height:18px;opacity:.55;pointer-events:none}
+button{position:absolute;right:7px;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;border-radius:50%;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;cursor:pointer;font-size:17px;line-height:1}
+button:hover{filter:brightness(1.12)}
+.tiles{margin-top:40px;display:grid;grid-template-columns:repeat(6,minmax(84px,104px));gap:14px;justify-content:center}
+.tile{display:flex;flex-direction:column;align-items:center;gap:9px;padding:16px 8px 13px;background:var(--panel);border:1px solid var(--line);
+  border-radius:16px;color:var(--txt);text-decoration:none;font-size:12.5px;transition:transform .12s,border-color .12s,background .12s}
+.tile:hover{transform:translateY(-2px);border-color:#3a4150;background:#1d2128}
+.tile svg{width:24px;height:24px;stroke:var(--acc);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.facts{margin-top:34px;color:#596070;font-size:11.5px;display:flex;gap:18px;flex-wrap:wrap;justify-content:center}
+.facts span:before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:#3f8f64;margin-right:7px;vertical-align:middle}
+@media(max-width:760px){.tiles{grid-template-columns:repeat(3,minmax(84px,104px))}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
-<div class='logo'>&#128274;</div><h1>Recognition</h1>
-<div class='sub'>Governed browser &middot; identity-bound &middot; deterministic evidence</div>
-<form id='f'><input id='q' autofocus autocomplete='off' spellcheck='false' placeholder='Search DuckDuckGo or type a URL'>
-<button type='submit'>Search</button></form>
-<div class='pills'><span class='pill'>&#128737; Tracker &amp; ad blocking</span><span class='pill'>HTTPS-first</span>
-<span class='pill'>No autofill</span><span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span></div>
-<div class='foot'>every session is exportable as a signed, hash-chained evidence packet</div>
+<svg class='mark' viewBox='0 0 64 64' aria-hidden='true'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='#4c9bf0'/><stop offset='1' stop-color='#7c6cf0'/></linearGradient></defs>
+<circle cx='32' cy='32' r='27' fill='none' stroke='url(#g)' stroke-width='5'/><circle cx='32' cy='32' r='10' fill='url(#g)'/><path d='M32 5v9M32 50v9M5 32h9M50 32h9' stroke='url(#g)' stroke-width='4' stroke-linecap='round'/></svg>
+<h1>Recognition</h1>
+<div class='tag'>Private by design. Governed by proof.</div>
+<div class='hello' id='hi'></div>
+<form id='f'><svg class='si' viewBox='0 0 24 24' fill='none' stroke='#cfd4dc' stroke-width='2' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><path d='M20 20l-3.5-3.5'/></svg>
+<input id='q' autofocus autocomplete='off' spellcheck='false' placeholder='Search privately or type a web address'><button type='submit' title='Search'>&#8594;</button></form>
+<div class='tiles'>
+<a class='tile' href='recognition:bookmarks'><svg viewBox='0 0 24 24'><path d='M6 3h12v18l-6-4-6 4z'/></svg>Bookmarks</a>
+<a class='tile' href='recognition:history'><svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='9'/><path d='M12 7v5l3 2'/></svg>History</a>
+<a class='tile' href='recognition:passwords'><svg viewBox='0 0 24 24'><rect x='5' y='11' width='14' height='9' rx='2'/><path d='M8 11V8a4 4 0 018 0v3'/></svg>Passwords</a>
+<a class='tile' href='recognition:shield'><svg viewBox='0 0 24 24'><path d='M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z'/></svg>Shield</a>
+<a class='tile' href='recognition:tools'><svg viewBox='0 0 24 24'><path d='M14 6a4 4 0 005 5l-9 9-3-3 9-9a4 4 0 00-2-2z'/></svg>Tools</a>
+<a class='tile' href='recognition:settings'><svg viewBox='0 0 24 24'><circle cx='12' cy='12' r='3'/><path d='M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1'/></svg>Settings</a>
+</div>
+<div class='facts'><span>No telemetry</span><span>HTTPS first</span><span>Trackers and ads blocked</span><span>Sleeping tabs</span></div>
 <script>
+(function(){var h=new Date().getHours();document.getElementById('hi').textContent=h<5?'Still up?':h<12?'Good morning':h<18?'Good afternoon':'Good evening'})();
 document.getElementById('f').addEventListener('submit',function(e){e.preventDefault();
 var v=(document.getElementById('q').value||'').trim();if(!v)return;
 if(/^[a-z][a-z0-9+.\-]*:\/\//i.test(v)){location.href=v;}
@@ -1568,6 +1610,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 
             sb.Append("<h1 style='font-size:16px'>Web engine</h1>");
             sb.Append(EngineHtmlRow());
+            sb.Append(DefaultBrowserHtmlRow());
             sb.Append("<h1 style='font-size:16px'>Extensions</h1>");
             sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + (_extPaths.Count + _extState.Items.Count) + " configured") : "off") + " &middot; <a class='t' href='recognition:extensions'>manage extensions</a>" + "</div></div>");
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Configured in <code>config\\extensions.v1.json</code>: an unpacked folder, a <code>.zip</code>, or a <code>.crx</code> (universal adapter — all three are normalized to an unpacked folder). Every extension must ALSO pass the governance load gate (<code>recognition_extension_governance_v1.ps1</code>): its current bytes are hashed and checked against a ledger decision an operator recorded explicitly via <code>-Action register</code>. Nothing loads on first sight, on a tamper, or on a review/deny decision &mdash; refusals are receipted like any other action.</div>");
@@ -1765,6 +1808,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                     break;
                 case "export-session": Export_Click(this, new RoutedEventArgs()); break;
                 case "verify-exit": if (!string.IsNullOrWhiteSpace(_netExitCheckUrl)) NavigateTab(tab, _netExitCheckUrl); break;
+                case "default-browser": OpenDefaultAppsSettings(); break;
                 case "open-profile": OpenFolder(Path.Combine(_repoRoot, "runtime", "browser_profile")); break;
                 case "open-packets": OpenFolder(Path.Combine(_repoRoot, "packets")); break;
                 case "vpn-off": SetVpnOff(); break;
@@ -2015,6 +2059,13 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
 
         private void OnNavStarting(BrowserTab tab, CoreWebView2NavigationStartingEventArgs e)
         {
+            // Links between the browser's own pages (recognition:settings, ...) work only from those pages. A web page cannot send you there.
+            if (e.Uri.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
+            {
+                e.Cancel = true;
+                if (tab.IsInternal) NavigateTab(tab, e.Uri);
+                return;
+            }
             // HTTPS-only: plain http to anything but loopback is upgraded (host parsed properly, so
             // http://localhost.evil.com is NOT treated as local).
             var upgraded = PrivacyRules.HttpsUpgrade(e.Uri);

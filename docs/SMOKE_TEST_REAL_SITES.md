@@ -1,4 +1,4 @@
-# Real-site smoke test and measurement sheet (v1.2.0)
+# Real-site smoke test and measurement sheet (v1.3.0)
 
 Unit tests cannot cover the web engine. Run this once per release (about 20 minutes) and record results in the table at the bottom.
 Use a normal tab unless stated. Shield level = Balanced, Tracking prevention = Balanced, unless stated.
@@ -65,8 +65,19 @@ Expected honest result: lower than Brave on list breadth and cosmetic coverage u
 | # | Do this | Pass when |
 |---|---|---|
 | G1 | Fresh Windows user or VM: run the installer | Installs, launches, no missing runtime message |
-| G2 | Install v1.2.0 over an older version | Settings, vault, bookmarks, extension state survive |
+| G2 | Install v1.3.0 over an older version | Settings, vault, bookmarks, extension state survive |
 | G3 | Uninstall | App removed; data removal is your choice and is stated |
 
 | Date | Build | Tester | Failures (id: note) |
 |---|---|---|---|
+
+## H. Look and default browser (v1.3.1)
+| # | Do this | Pass when |
+|---|---|---|
+| H1 | Launch Recognition | A small splash shows, then the main window opens with a dark title bar and the new start page |
+| H2 | Open a new tab, then an internal page (Settings) | No white box where the bookmark star was; the star appears only on real web pages |
+| H3 | Click each start page tile | Bookmarks, History, Passwords, Shield, Tools and Settings open |
+| H4 | Settings > Default browser > Open Windows Default apps, pick Recognition for HTTP and HTTPS | Windows lists Recognition (installed copy only) |
+| H5 | Click a web link in another program | Recognition opens it in a new tab; no second window |
+| H6 | Launch Recognition again from the Start menu while it is running | The running window comes forward; no second copy starts |
+| H7 | Double-click a local .html file after choosing Recognition for .html | It opens in a tab |

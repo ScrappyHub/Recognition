@@ -29,6 +29,12 @@ foreach($lnk in @(
 $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Recognition"
 if(Test-Path -LiteralPath $key){ Remove-Item -LiteralPath $key -Recurse -Force -ErrorAction SilentlyContinue }
 
+# default-browser registration
+foreach($k in @("HKCU:\Software\Classes\RecognitionURL","HKCU:\Software\Classes\RecognitionHTML","HKCU:\Software\Clients\StartMenuInternet\Recognition")){
+  if(Test-Path -LiteralPath $k){ Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Remove-ItemProperty -Path "HKCU:\Software\RegisteredApplications" -Name "Recognition" -ErrorAction SilentlyContinue
+
 # files
 if(Test-Path -LiteralPath $InstallDir){
   if($KeepData){
