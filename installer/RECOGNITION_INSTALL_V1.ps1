@@ -1,4 +1,4 @@
-# RECOGNITION_INSTALL_V1 — per-user installer for the Recognition governed browser.
+# RECOGNITION_INSTALL_V1 - per-user installer for the Recognition governed browser.
 #
 # Run this from inside an extracted distribution (the folder that contains
 # browser\RecognitionBrowser.exe + scripts\ + policies\ + proofs\trust\), produced by
@@ -28,7 +28,7 @@ if(-not $Source){
 $Source = (Resolve-Path -LiteralPath $Source).Path
 $exeSrc = Join-Path $Source "browser\RecognitionBrowser.exe"
 if(-not (Test-Path -LiteralPath $exeSrc)){
-  Die ("could not find browser\RecognitionBrowser.exe under: " + $Source + " — run this from an extracted distribution.")
+  Die ("could not find browser\RecognitionBrowser.exe under: " + $Source + " - run this from an extracted distribution.")
 }
 
 if((Resolve-Path -LiteralPath $InstallDir -ErrorAction SilentlyContinue) -and ((Resolve-Path -LiteralPath $InstallDir).Path.TrimEnd("\") -eq $Source.TrimEnd("\"))){ Die "run the installer from the extracted distribution (dist\recognition), not from the installed folder" }
@@ -72,7 +72,7 @@ if(-not $NoShortcuts){
     $lnk.TargetPath       = $exe
     $lnk.WorkingDirectory = (Join-Path $InstallDir "browser")
     $lnk.IconLocation     = $exe + ",0"
-    $lnk.Description       = "Recognition — governed, private browser"
+    $lnk.Description       = "Recognition - governed, private browser"
     $lnk.Save()
   }
   Write-Host "  shortcuts: Start Menu + Desktop created"
@@ -123,7 +123,7 @@ Write-Host "  default-browser: Recognition is now listed in Windows Default apps
 
 # --- dependency hints (non-fatal) -------------------------------------------
 if(-not (Get-Command pwsh -ErrorAction SilentlyContinue)){
-  Write-Host "  NOTE: PowerShell 7 (pwsh) not found — locked-startup verification and packet export need it. Install from https://aka.ms/powershell" -ForegroundColor Yellow
+  Write-Host "  NOTE: PowerShell 7 (pwsh) not found - locked-startup verification and packet export need it. Install from https://aka.ms/powershell" -ForegroundColor Yellow
 }
 
 Write-Host ""

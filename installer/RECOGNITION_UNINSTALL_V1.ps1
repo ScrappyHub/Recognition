@@ -1,4 +1,4 @@
-# RECOGNITION_UNINSTALL_V1 — remove a per-user Recognition install.
+# RECOGNITION_UNINSTALL_V1 - remove a per-user Recognition install.
 #
 #   pwsh -File installer\RECOGNITION_UNINSTALL_V1.ps1
 #     [-InstallDir <path>]   # defaults to %LOCALAPPDATA%\Recognition
