@@ -415,20 +415,21 @@ blogspot.co.uk blogspot.de blogspot.fr blogspot.in
 
         private NetRule? FindBlock(string url, string host, int hs, int he, string pageHost, bool third, ResType type, out bool important)
         {
-            important = false; NetRule? found = null;
+            bool imp = false; NetRule? found = null;
             void Check(List<NetRule>? list)
             {
                 if (list == null) return;
                 foreach (var r in list)
                 {
                     if (found != null && (found.Important || !r.Important)) continue;
-                    if (RuleApplies(r, url, hs, he, pageHost, third, type)) { found = r; important = r.Important; }
+                    if (RuleApplies(r, url, hs, he, pageHost, third, type)) { found = r; imp = r.Important; }
                 }
             }
             foreach (var h in HostSuffixes(host)) if (_hostBlock.TryGetValue(h, out var l)) Check(l);
-            if (found != null && important) return found;
+            if (found != null && imp) { important = true; return found; }
             foreach (var tok in Tokens(url)) if (_tokBlock.TryGetValue(tok, out var l)) Check(l);
             Check(_fallbackBlock);
+            important = imp;
             return found;
         }
 

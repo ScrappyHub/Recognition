@@ -170,7 +170,7 @@ namespace Recognition.Browser
             CoreWebView2WebResourceContext.XmlHttpRequest => ResType.Xhr,
             CoreWebView2WebResourceContext.Fetch => ResType.Xhr,
             CoreWebView2WebResourceContext.EventSource => ResType.Xhr,
-            CoreWebView2WebResourceContext.WebSocket => ResType.WebSocket,
+            CoreWebView2WebResourceContext.Websocket => ResType.WebSocket,
             CoreWebView2WebResourceContext.Ping => ResType.Ping,
             CoreWebView2WebResourceContext.CspViolationReport => ResType.Ping,
             CoreWebView2WebResourceContext.TextTrack => ResType.Media,

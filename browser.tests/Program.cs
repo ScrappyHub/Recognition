@@ -337,7 +337,7 @@ Console.WriteLine("=== PDF page tools (executed C#, PDFsharp) ===");
     {
         var d = new PdfSharp.Pdf.PdfDocument();
         int baseW = (prefix[0] - 'a' + 1) * 100;
-        for (int i = 1; i <= n; i++) { var p = d.AddPage(); p.MediaBox = new PdfSharp.Pdf.PdfRectangle(0, 0, baseW + i, 200); }
+        for (int i = 1; i <= n; i++) { var p = d.AddPage(); p.Width = PdfSharp.Drawing.XUnit.FromPoint(baseW + i); p.Height = PdfSharp.Drawing.XUnit.FromPoint(200); }
         using var ms = new MemoryStream(); d.Save(ms, false); return ms.ToArray();
     }
     List<string> Markers(byte[] pdf)
@@ -843,6 +843,68 @@ Console.WriteLine("=== Password vault (executed C#) ===");
     var fs = FillScript.Build("al\"ice</script>'", "p\\w'd\u2028\"x");
     Check(!fs.Contains('\n') && fs.Contains("al\\u0022ice") && fs.Contains("\\u003C/script\\u003E") && fs.EndsWith(")"), "fill script: a single line; values are JSON-escaped literals (</script>, quotes, backslash, U+2028 cannot break out)");
     Check(fs.Contains("input[type=password]") && fs.Contains("dispatchEvent"), "fill script: targets password fields and notifies the page");
+}
+
+// ---- stress: the filter engine at real-list scale, adversarial input, and PDF/extension abuse ------------------------------------
+{
+    var stSw = System.Diagnostics.Stopwatch.StartNew();
+    var stSb = new System.Text.StringBuilder(); var stRnd = new Random(12345);
+    for (int i = 0; i < 150000; i++)
+    {
+        switch (i % 4)
+        {
+            case 0: stSb.Append("||ads").Append(i).Append(".tracker").Append(i % 977).Append(".example^\n"); break;
+            case 1: stSb.Append("/banner").Append(i).Append("/*$script,third-party\n"); break;
+            case 2: stSb.Append("##.ad-").Append(i).Append("\n"); break;
+            default: stSb.Append("@@||ok").Append(i).Append(".example^\n"); break;
+        }
+    }
+    var stE = new FilterEngine(); stE.AddList(stSb.ToString(), "big");
+    var stLoad = stSw.ElapsedMilliseconds;
+    Check(stE.NetworkRules > 100000, "stress: a 150,000-line list loads (" + stE.NetworkRules + " network rules, " + stLoad + " ms)");
+    Check(stLoad < 20000, "stress: loading a 150,000-line list takes under 20 s");
+    stSw.Restart(); int stBlocked = 0;
+    for (int i = 0; i < 200000; i++)
+        if (stE.Match("https://ads" + (i % 150000) + ".tracker" + ((i % 150000) % 977) + ".example/p.js", "https://site.test/", ResType.Script).Blocked) stBlocked++;
+    var stMatch = stSw.ElapsedMilliseconds;
+    Check(stBlocked > 0, "stress: matching finds blocked requests at scale");
+    Check(stMatch < 20000, "stress: 200,000 matches against a 150,000-rule list take under 20 s (" + stMatch + " ms)");
+    Check(!stE.Match("https://ok3.example/x.js", "https://site.test/", ResType.Script).Blocked, "stress: an exception rule still works inside a huge list");
+
+    // adversarial: very long urls, pathological patterns, binary junk
+    var stAdv = new FilterEngine();
+    stAdv.AddList("*a*a*a*a*a*a*a*a*a*b\n||x.example^*a*a*a*a*a*a*a*a*c\n" + new string('*', 5000) + "\n" + new string('a', 100000) + "\n", "adv");
+    stSw.Restart();
+    var stLong = "https://x.example/" + new string('a', 200000);
+    stAdv.Match(stLong, "https://p.test/", ResType.Script);
+    stAdv.Match("https://" + new string('a', 100000) + ".example/", "https://p.test/", ResType.Script);
+    stAdv.Match("::::" + new string('/', 50000), "", ResType.Other);
+    Check(stSw.ElapsedMilliseconds < 5000, "stress: pathological wildcard rules and 200 kB urls do not blow up (" + stSw.ElapsedMilliseconds + " ms)");
+    bool stNoThrow = true;
+    try { foreach (var junk in new[] { null, "", "\0\0", "http://", "://", "https://[::1", "https://a@b@c/", "data:text/html,x", "javascript:alert(1)" }) stAdv.Match(junk, junk, ResType.Other); }
+    catch { stNoThrow = false; }
+    Check(stNoThrow, "stress: malformed and hostile urls never throw");
+    bool stRuleThrow = false;
+    try { var stJ = new FilterEngine(); var jb = new byte[20000]; stRnd.NextBytes(jb); stJ.AddList(System.Text.Encoding.Latin1.GetString(jb), "junk"); }
+    catch { stRuleThrow = true; }
+    Check(!stRuleThrow, "stress: random binary bytes as a filter list never throw");
+    var stCap = new FilterEngine(); stCap.AddList("##a{background:url(x)}\n##a:has(b)\n##a,b{x}\n##}\n##a;color:red\n", "c");
+    Check(stCap.CosmeticCssFor("x.example").IndexOf("url(", StringComparison.Ordinal) < 0, "stress: cosmetic rules carrying url() or injected CSS are rejected");
+
+    // PDF: page planner extremes. A plan is produced within the caps or refused with ImagePdfException, never any other failure.
+    foreach (var (w, h) in new[] { (1280, 100), (1280, 59999), (1280, 60000), (1280, 1000000), (1, 1), (1, 60000), (8000, 8000), (0, 0), (-5, 10), (int.MaxValue, int.MaxValue) })
+        foreach (var lay in new[] { "a4", "letter", "single", "bogus" })
+        {
+            string res;
+            try
+            {
+                var pl = PagePlanner.Plan(w, h, lay, 4000);
+                res = pl.Pages.Count <= PagePlanner.MaxPages && pl.Tiles.Count <= PagePlanner.MaxTiles && pl.Pages.All(q => q.WidthPt <= PagePlanner.MaxPdfPt && q.HeightPt <= PagePlanner.MaxPdfPt) ? "ok" : "over cap";
+            }
+            catch (ImagePdfException) { res = "ok"; }
+            catch (Exception ex) { res = ex.GetType().Name; }
+            Check(res == "ok", "stress: page planner " + w + "x" + h + " " + lay + " stays within caps or is refused cleanly (" + res + ")");
+        }
 }
 
 Console.WriteLine();
