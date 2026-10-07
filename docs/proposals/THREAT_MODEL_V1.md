@@ -67,6 +67,11 @@ and nation-state-grade targeted exploitation of the Chromium engine itself.
 | F2 | Medium | HTTPS-only upgrade exempted any URL that *started with* `http://localhost` or `http://127.0.0.1`, so `http://localhost.evil.com/` and `http://127.0.0.1.evil.com/` were loaded over plain http. | Parse the host; loopback only for `localhost`, `*.localhost`, `127.0.0.0/8`, `::1`. | 5 executed tests incl. both look-alike hosts + static check that the prefix test cannot return |
 | F3 | Medium | Downloads were saved automatically with no friction for programs/scripts or names disguised with right-to-left override. | `DownloadRules`: executables, installers, scripts, shortcuts and direction-control names need an explicit Yes; refusal and approval are receipted. | 4 executed tests |
 | F4 | Low | Page-injected key handler accepted synthetic (script-generated) key events. | `isTrusted` check in the shortcut script. | static check |
+| F5 | **Medium** | **Pop-ups.** Every `window.open` opened a tab with no user-gesture check (pop-up spam), navigated it with a *host-initiated* load to whatever address the page named (so a page could make the browser open `file:` or other schemes that the engine would refuse to a page), and a pop-up from a **private** tab opened a normal, history-recording tab (a privacy leak). | `PopupRules`: user gesture required unless the site is allowed, http(s) or blank only, private stays private; blocked pop-ups are counted. | executed tests (incl. 9 hostile schemes) |
+| F6 | Medium | Links that ask Windows to start another program (for example `ms-msdt:`, `search-ms:`) were not controlled by the host. | `LaunchingExternalUriScheme` handler: blocked unless `mailto:`/`tel:` clicked by the user; blocks are receipted. | executed tests (11 vectors) |
+| F7 | Low | The extension load gate shelled out to PowerShell 7 (extensions silently never loaded without it) and the legacy zip unpacker had no path or size limits; extensions the browser had not approved stayed in the engine profile. | Native C# gate that reproduces the PowerShell identity and ledger exactly (verified against the real ledger); hostile-package unpacker with limits; unapproved extensions removed at startup. | executed tests + static |
+| F8 | Low | Filter and per-site exemption decisions used the *previous* page's address while a new page was loading. | The page being loaded is tracked from `NavigationStarting`. | static |
+| F9 | Low | "Restart to apply" depended on PowerShell 7 being installed. | `cmd.exe` helper. | — |
 
 These were real exposures in builds before this change. Anyone who ran an earlier build should treat site permissions
 and certificate-trust decisions made while browsing untrusted sites as suspect and review them in Settings.
@@ -77,8 +82,8 @@ Legend — **Impl**: implemented; **Tested**: executed by `browser.tests` (or Po
 
 | ID | Threat (adversary) | Mitigation | Evidence | Residual risk |
 |---|---|---|---|---|
-| T1 | Engine exploit from a web page (X1) | Chromium sandbox + site isolation + Microsoft's patches (inherited) | not ours | **Depends entirely on the installed WebView2 runtime version.** No version check or "update the runtime" warning yet (G1). |
-| T2 | Cross-site tracking, ads, session replay (X1) | Host blocklist at the network layer, per-site exemption, tracking-parameter stripping, GPC/DNT header | Impl, Tested (privacy rules) | No fingerprinting resistance, no cosmetic filtering, blocklist is host-based and static (G6). Third-party cookies follow engine defaults (G3). |
+| T1 | Engine exploit from a web page (X1) | Chromium sandbox + site isolation + Microsoft's patches (inherited); installed runtime version is read at startup and a warning shows below a floor | Impl, Tested (version rules) | **Depends entirely on the installed WebView2 runtime version.** The floor is a coarse lower bound, the warning does not block browsing, and Recognition does not control update timing (G1 partly done). |
+| T2 | Cross-site tracking, ads, session replay (X1) | Host blocklist at the network layer, per-site exemption, tracking-parameter stripping, GPC/DNT header | Impl, Tested | EasyList-syntax network + cosmetic filtering (lists are user-downloaded, not bundled), per-site fingerprint farbling, engine tracking-prevention level. No scriptlets, procedural cosmetics, redirect resources or CNAME uncloaking; shield does not cover workers, fonts or timing and has not been scored against public fingerprinting suites (G6 partly done, G14, G15). |
 | T3 | Permission abuse: camera, mic, location, notifications (X1) | Default deny, per-origin allow, every decision receipted; commands unreachable from web content (F1) | Impl, Tested, Static | Granted permissions last until revoked in Settings. |
 | T4 | Bad TLS certificate / MITM (X2) | Fail-closed; exception pinned to the exact certificate by DER hash | Impl, Tested (21 checks) | Engine API remembers an allowed exception for the session (documented limit). |
 | T5 | Downgrade to plain http (X2) | HTTPS-only upgrade, loopback-only exemption (F2) | Impl, Tested, Static | HSTS preload and mixed-content handling are the engine's. |
@@ -86,16 +91,19 @@ Legend — **Impl**: implemented; **Tested**: executed by `browser.tests` (or Po
 | T7 | Local data theft by another user (X3) | DPAPI for history, bookmarks, downloads, ledgers, vault, snapshots-in-memory | Impl | The WebView2 profile (cookies, cache) uses Chromium's protection, not ours. Private tabs use a throw-away profile deleted on exit (not securely wiped). |
 | T8 | Tampering with local records (X3, X4) | Hash-chained, DPAPI-wrapped ledgers; verification detects edits, reorders, mid-chain deletion | Impl, Tested (golden vectors derived independently) | Same-user malware can delete and rebuild a whole ledger. Tail truncation is only detected where an anchor exists (anchor tooling exists; not automatic). |
 | T9 | Malicious update (X5) | Ed25519-signed manifest, pinned `allowed_signers`, per-file SHA-256, rollback on failure, downgrade refused | Impl, Tested (32 checks) | Signing key custody is the whole story; no key rotation/revocation (G8); **the executable itself is not Authenticode-signed** (G2). |
-| T10 | Malicious extension (X5) | Governed extension adapter: identity = content hash, allow/review/deny decisions, load gate | Impl, Tested | Tiny ecosystem; review decisions are manual. |
+| T10 | Malicious extension (X5) | Governed extension adapter: identity = content hash, allow/review/deny decisions, load gate | Impl, Tested (against the real PowerShell ledger) | WebView2 supports part of the extension system; policy does not score content-script patterns or optional permissions (shown to the user); an approved extension runs with its declared access. |
 | T11 | Hostile dependency (X5) | Few, pinned dependencies (WebView2, ProtectedData, PDFsharp — MIT, exact versions) | Impl | No lock file, no SBOM, no automated advisory scanning (G9). |
 | T12 | Look-alike / homograph origin (X6) | Exact-origin matching for vault and permissions | Impl, Tested | No Safe-Browsing-style reputation service of our own. WebView2's SmartScreen setting is left at its default and is not tested (G12). |
 | T13 | Malicious PDF / image / source file (X7) | PDFs and images are opened by the engine's own sandboxed viewers; our PDF page tools use a pure managed library on bytes, size- and page-limited, password-protected files refused; image tools bound dimensions/pixels; source viewer is lexical only, linear-time, every character HTML-encoded, binary files refused | Impl, Tested (hostile input, linear-time, round-trip, injection) | Parser bugs in PDFsharp or Windows Imaging would be exploitable in the host process (not sandboxed). Mitigation is size limits and the user choosing the file. |
 | T14 | Snapshot interception (X8) | AES-256-GCM, PBKDF2-SHA256 (600k), 100-bit random code, authenticated header, expiry; blob and code travel separately | Impl, Tested | Anyone holding blob **and** code can decrypt offline, ignoring expiry. Honest clients enforce expiry only. |
 | T15 | Shoulder-surf / unattended session (X9) | Copy clears; reveal auto-hides after 10 s | Impl | No idle lock for the vault (G5). |
 | T16 | Drive-by download (X1) | Risky types and deceptive names need confirmation (F3); Windows Mark-of-the-Web is applied by the engine | Impl, Tested | Only extension-based; no content scanning. |
-| T17 | Popup / tab spam, shortcut abuse (X1) | Tab shortcuts rate-limited, synthetic keys ignored (F4) | Impl, Static | No popup blocker for `window.open` (G4). |
+| T17 | Popup / tab spam, shortcut abuse (X1) | Tab shortcuts rate-limited, synthetic keys ignored (F4) | Impl, Tested, Static | Pop-ups need a gesture (F5); the allow-list is per site; shortcut rate limits are time-based only. |
 | T18 | Network operations misuse (X1, X9) | Web content cannot reach network commands (F1); `netsh` through argument lists; names/hosts validated; destructive actions confirm | Impl, Tested (validators) | `netsh` output parsing assumes English Windows. |
-| T19 | Injection into internal pages (X1) | All dynamic page text is encoded; colours/fonts allowlisted; URLs scheme-checked | Impl, Tested | Internal pages allow inline script and have no Content-Security-Policy yet (G11). |
+| T20 | Cross-site fingerprinting / device re-identification (X1) | Fingerprint shield: per-site, per-session canvas/WebGL/audio farbling; reduced hardware hints; Strict also screen/battery/voices | Impl, Tested (node, simulated globals) | Not scored against real fingerprinting suites; a script can detect noise; fonts, timing, WebRTC and workers untouched (G14). |
+| T21 | Passkey misuse or silent registration (X1) | Windows holds the credentials; calls are counted per site (no credential data) and can be blocked per site; self-test verifies signatures independently | Impl, Tested (node vectors) | Which authenticators work is up to Windows. A site can still register a passkey when allowed. |
+| T22 | Malicious list or package from the network (X5) | Lists: https-only, size-capped, must parse, no scripts executed, hash receipted; packages: https-only, capped, hostile-archive unpacker, governance decision + review before install | Impl, Tested, Static | A list can break or hide parts of sites (it cannot run code); a reviewed extension is trusted as far as you trusted it. |
+| T19 | Injection into internal pages (X1) | All dynamic page text is encoded; colours/fonts allowlisted; URLs scheme-checked | Impl, Tested | Internal pages carry a CSP (no network, frames, plugins, forms, base URL) but still allow inline script because they are built from strings (G11 partly done). |
 
 ## 7. Honest comparison with Chrome, Edge and Brave
 
@@ -105,8 +113,8 @@ Legend — **Impl**: implemented; **Tested**: executed by `browser.tests` (or Po
 |---|---|---|
 | Engine security (sandbox, site isolation, exploit mitigations, patch speed) | Own build, rapid auto-update, large security teams, fuzzing, bug bounties | **Parity at best.** Same engine family via WebView2, patched by Microsoft; we add nothing at engine level and don't control update timing. |
 | Reputation protection (phishing/malware) | Safe Browsing / SmartScreen | WebView2 default, unverified (G12) |
-| Ad/tracker blocking | Brave: network + cosmetic filtering, storage partitioning, fingerprint "farbling" | Host blocklist only. **Weaker.** |
-| Fingerprinting resistance | Brave: yes. Others: partial | None. **Weaker.** |
+| Ad/tracker blocking | Brave: network + cosmetic filtering, scriptlets, redirect resources, procedural cosmetics, CNAME uncloaking, storage partitioning | EasyList-syntax network + simple cosmetic filtering with user-downloaded lists, plus the engine's tracking prevention. **Comparable for ordinary network blocking, weaker overall** (no scriptlets/procedural/CNAME; new and unproven in the wild). |
+| Fingerprinting resistance | Brave: farbling of canvas, WebGL, audio, plugins, hardware and more, in all contexts. Others: partial | Canvas/WebGL/audio farbling, reduced hardware hints, optional screen/battery/voice limits; **not in workers, no font or WebRTC measures, unmeasured against public test suites. Weaker than Brave's, stronger than none.** |
 | Permissions model | Prompt-based, remembered per site | Default-deny, explicit allow, receipted. **Stricter by default; less convenient.** |
 | Certificate exceptions | Click-through warnings (Chrome/Edge) | Exact-certificate pinning, fail-closed. **Stricter.** |
 | Password manager | Mature, synced, OS-integrated | Local DPAPI vault, exact-origin explicit fill. **Different trade-off; fewer features; no master password.** |
@@ -123,19 +131,23 @@ enforcement, and a track record.
 
 | ID | Gap | Why it matters |
 |---|---|---|
-| G1 | Read the installed WebView2 runtime version; warn (and offer the Microsoft installer link) when it is older than a pinned minimum | Closes the biggest inherited risk (T1) |
+| G1 | **Partly done:** the version is read and a warning is shown below a floor (128). Still open: raise the floor each release, optionally refuse to browse on very old engines | Closes the biggest inherited risk (T1) |
 | G2 | Authenticode-sign the executable and installer | SmartScreen reputation; tamper evidence outside our own updater (T9) |
-| G3 | Third-party cookie / storage partitioning policy | Tracking and cross-site leaks (T2) |
-| G4 | Popup blocking policy for `window.open` | T17 |
+| G3 | **Partly done:** the engine's tracking-prevention level is selectable (default Balanced). Still open: our own explicit third-party cookie policy and measurement | Tracking and cross-site leaks (T2) |
+| G4 | **Done (F5).** | T17 |
 | G5 | Master password or Windows Hello gate and idle lock for the vault | T6, T15 |
-| G6 | Fingerprinting mitigations | T2 |
+| G6 | **Partly done (T20).** Open: score against public fingerprinting suites (EFF Cover Your Tracks, CreepJS, AmIUnique), extend to workers | T2 |
 | G7 | Independent penetration test | Everything |
 | G8 | Update-key rotation and revocation list | T9 |
 | G9 | NuGet lock files, SBOM, advisory scanning in CI | T11 |
 | G10 | Automatic external anchoring of ledger heads | T8 |
-| G11 | Content-Security-Policy for internal pages (needs per-page review: some load favicons) | T19 |
+| G11 | **Partly done:** CSP in place; remaining step is removing inline script (needs the page builders refactored to external, hashed scripts) | T19 |
 | G12 | Explicit, tested SmartScreen / reputation-check setting | T12 |
 | G13 | Run PDFsharp/Imaging work in a separate, low-privilege process | T13 |
+| G14 | Fingerprint shield for workers, font/WebRTC measures; measurement against public suites | T20 |
+| G15 | Scriptlets, procedural cosmetic filters, redirect resources and CNAME uncloaking in the filter engine | T2 |
+| G16 | Route list/package downloads through the configured proxy/VPN; add list signature or pinning where publishers offer it | T22 |
+| G17 | Score content-script match patterns and optional permissions in the extension policy (needs an owner decision: it changes canonical policy) | T10 |
 
 ## 9. How this document is kept honest
 
@@ -144,3 +156,12 @@ enforcement, and a track record.
 - A new privileged command must be added behind `MessageGate`; a new local tool must stay free of network clients
   (asserted statically).
 - Claims about being "stronger" belong in this table or not at all.
+- Fingerprint-shield claims are limited to what the node tests show (determinism per site and per session, noise size,
+  no-op on internal pages). **Before claiming more, measure:** open EFF Cover Your Tracks, AmIUnique and CreepJS in a normal
+  tab with the shield Off, Standard and Strict, reload twice, and record the canvas/WebGL/audio hashes and the uniqueness
+  verdicts under `docs\proposals\measurements\` with the date and Recognition version. Expected: the canvas, WebGL and audio
+  hashes change between sites and between browser sessions but stay the same on reload within one site; fonts, WebRTC and
+  timing signals are unchanged (that is the documented gap G14).
+- Filter-engine claims are limited to the executed rule tests. To compare coverage with another blocker, load the same
+  EasyList/EasyPrivacy on a few busy news sites and compare the blocked-request counts shown on the Shield page and in the
+  other browser's own counter; record the sites, the date and both numbers.

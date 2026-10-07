@@ -80,6 +80,11 @@
                 <MenuItem Header="Print..."        Click="MenuPrint_Click"/>
                 <MenuItem Header="Save page as PDF..." Click="MenuSavePdf_Click"/>
                 <MenuItem Header="Screenshot..."   Click="MenuScreenshot_Click"/>
+                <MenuItem Header="Full-page screenshot to PDF (A4 pages)..." Click="MenuFullPdfA4_Click"/>
+                <MenuItem Header="Full-page screenshot to PDF (Letter pages)..." Click="MenuFullPdfLetter_Click"/>
+                <MenuItem Header="Full-page screenshot to PDF (one long page)..." Click="MenuFullPdfSingle_Click"/>
+                <MenuItem Header="Full-page screenshot (PNG)..." Click="MenuFullPng_Click"/>
+                <MenuItem Header="Use the PDF in this tab in PDF page tools" Click="MenuPdfFromTab_Click"/>
                 <MenuItem Header="Edit this page (on/off)" Click="MenuEditPage_Click"/>
                 <MenuItem Header="View source (highlighted)" Click="MenuViewSource_Click"/>
                 <Separator/>
@@ -93,6 +98,9 @@
               <Separator/>
               <MenuItem Header="Network"   Click="MenuNetwork_Click"/>
               <MenuItem Header="Passwords" Click="MenuPasswords_Click"/>
+              <MenuItem Header="Shield (ads, trackers, fingerprinting)" Click="MenuShield_Click"/>
+              <MenuItem Header="Passkeys" Click="MenuPasskeys_Click"/>
+              <MenuItem Header="Extensions" Click="MenuExtensions_Click"/>
               <MenuItem Header="Setup snapshot" Click="MenuSetup_Click"/>
               <MenuItem Header="Settings"  Click="MenuSettings_Click"/>
               <MenuItem Header="Export Session (governed packet)" Click="Export_Click"/>

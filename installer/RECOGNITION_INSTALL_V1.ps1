@@ -72,7 +72,7 @@ $icon   = $exe + ",0"
 $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Recognition"
 New-Item -Path $key -Force | Out-Null
 New-ItemProperty -Path $key -Name "DisplayName"     -Value "Recognition"          -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $key -Name "DisplayVersion"  -Value "1.1.0"                 -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $key -Name "DisplayVersion"  -Value "1.2.0"                 -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name "Publisher"       -Value "ScrappyHub"            -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name "DisplayIcon"     -Value $icon                   -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $key -Name "InstallLocation" -Value $InstallDir             -PropertyType String -Force | Out-Null

@@ -13,9 +13,9 @@
     <RootNamespace>Recognition.Browser</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>recognition.ico</ApplicationIcon>
-    <Version>1.1.0</Version>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.0.0</FileVersion>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
     <Product>Recognition</Product>
     <Company>ScrappyHub</Company>
     <Description>Recognition governed browser</Description>
@@ -32,6 +32,10 @@
   <ItemGroup>
     <!-- window icon (pack URI) -->
     <Resource Include="recognition.ico" />
+    <!-- fingerprint shield script, injected into every web page before its own scripts run -->
+    <EmbeddedResource Include="shield\fingerprint_shield.js" LogicalName="fingerprint_shield.js" />
+    <EmbeddedResource Include="shield\passkey_guard.js" LogicalName="passkey_guard.js" />
+    <EmbeddedResource Include="shield\passkey_test.js" LogicalName="passkey_test.js" />
   </ItemGroup>
 
 </Project>

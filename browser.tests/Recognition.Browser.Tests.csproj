@@ -27,6 +27,10 @@
     <Compile Include="..\browser\PdfTools.cs" Link="PdfTools.cs" />
     <Compile Include="..\browser\ImageMath.cs" Link="ImageMath.cs" />
     <Compile Include="..\browser\SafetyRules.cs" Link="SafetyRules.cs" />
+    <Compile Include="..\browser\FilterEngine.cs" Link="FilterEngine.cs" />
+    <Compile Include="..\browser\ImagePdf.cs" Link="ImagePdf.cs" />
+    <Compile Include="..\browser\ExtensionGovernance.cs" Link="ExtensionGovernance.cs" />
+    <Compile Include="..\browser\RuntimeCheck.cs" Link="RuntimeCheck.cs" />
     <!-- Pinned. PDFsharp is MIT-licensed and has no native or Windows-only dependencies. -->
     <PackageReference Include="PDFsharp" Version="6.2.4" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />

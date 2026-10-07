@@ -272,7 +272,11 @@ namespace Recognition.Browser
         private void HandleToolsMessage(string msg)
         {
             string Dec(string s) { try { return Uri.UnescapeDataString(s); } catch { return ""; } }
-            if (msg == "tools-open") OpenFileInViewer();
+            if (msg == "tools-state")
+            {
+                if (_toolPdf != null) { try { PostToToolsPage(new { type = "pdf", name = Path.GetFileName(_toolPdfName), pages = PdfTools.PageCount(_toolPdf) }); } catch { } }
+            }
+            else if (msg == "tools-open") OpenFileInViewer();
             else if (msg.StartsWith("tools-page:"))
             {
                 switch (msg.Substring("tools-page:".Length))
@@ -283,6 +287,14 @@ namespace Recognition.Browser
                     case "shot": _ = ScreenshotAsync(); break;
                     case "edit": _ = ToggleEditPageAsync(); break;
                     case "source": _ = ViewSourceAsync(); break;
+                    case "fullpng": _ = FullPagePngAsync(); break;
+                    case "pdffromtab": _ = PdfFromCurrentTabAsync(); break;
+                    case "fullpdf:a4:1": _ = FullPagePdfAsync("a4", 1); break;
+                    case "fullpdf:a4:2": _ = FullPagePdfAsync("a4", 2); break;
+                    case "fullpdf:letter:1": _ = FullPagePdfAsync("letter", 1); break;
+                    case "fullpdf:letter:2": _ = FullPagePdfAsync("letter", 2); break;
+                    case "fullpdf:single:1": _ = FullPagePdfAsync("single", 1); break;
+                    case "fullpdf:single:2": _ = FullPagePdfAsync("single", 2); break;
                 }
             }
             else if (msg == "tools-pdf-pick") PickPdf();
@@ -476,6 +488,14 @@ namespace Recognition.Browser
  <a class='btn ghost' onclick=""send('tools-page:shot')"">Screenshot&hellip;</a>
  <a class='btn ghost' onclick=""send('tools-page:edit')"">Edit this page (on/off)</a>
  <a class='btn ghost' onclick=""send('tools-page:source')"">View source (highlighted)</a>
+ <a class='btn ghost' onclick=""send('tools-page:fullpng')"">Full-page screenshot (PNG)&hellip;</a>
+ <a class='btn ghost' onclick=""send('tools-page:pdffromtab')"">Use the PDF open in a tab&hellip;</a>
+</div>
+<div class='muted'><b>Full-page screenshot to PDF</b> captures the whole page, top to bottom, as a picture (text in it cannot be selected; use Save as PDF for selectable text). Pages up to 60,000 px tall.</div>
+<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 16px'>
+ <select id='fpl' style='background:#0e1015;color:#e8e8e8;border:1px solid #333844;border-radius:6px;padding:6px'><option value='a4'>A4 pages</option><option value='letter'>Letter pages</option><option value='single'>One long page</option></select>
+ <select id='fps' style='background:#0e1015;color:#e8e8e8;border:1px solid #333844;border-radius:6px;padding:6px'><option value='1'>normal sharpness</option><option value='2'>sharp (2x, larger file)</option></select>
+ <a class='btn' onclick=""send('tools-page:fullpdf:'+$('fpl').value+':'+$('fps').value)"">Save full page as PDF&hellip;</a>
 </div>
 
 <h1 style='font-size:16px'>Open a file</h1>
@@ -517,6 +537,7 @@ window.chrome.webview.addEventListener('message',function(ev){var m=ev.data;if(!
   else if(m.type==='pdfmany')$('manynames').textContent=m.names.join(' + ');
   else if(m.type==='img')$('imgname').textContent=m.name+' ('+m.w+'×'+m.h+', '+m.kb+' KB)';
   else if(m.type==='action'){$('msg').textContent=m.text;$('msg').style.color=m.ok?'':'#e57373'}});
+send('tools-state');
 </script>");
             sb.Append(SendScript()).Append(PageFoot);
             return sb.ToString();

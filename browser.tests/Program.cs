@@ -331,16 +331,19 @@ Console.WriteLine("=== Code highlighter (executed C#) ===");
 Console.WriteLine();
 Console.WriteLine("=== PDF page tools (executed C#, PDFsharp) ===");
 {
+    // Pages are identified by their MediaBox width (custom dictionary keys are not carried over by PDFsharp's page import,
+    // but the page geometry is): prefix 'a' -> widths 101..., 'b' -> 201..., so "a3" is a page 103 points wide.
     byte[] MakePdf(string prefix, int n)
     {
         var d = new PdfSharp.Pdf.PdfDocument();
-        for (int i = 1; i <= n; i++) { var p = d.AddPage(); p.Elements.SetString("/Marker", prefix + i); }
+        int baseW = (prefix[0] - 'a' + 1) * 100;
+        for (int i = 1; i <= n; i++) { var p = d.AddPage(); p.MediaBox = new PdfSharp.Pdf.PdfRectangle(0, 0, baseW + i, 200); }
         using var ms = new MemoryStream(); d.Save(ms, false); return ms.ToArray();
     }
     List<string> Markers(byte[] pdf)
     {
         using var d = PdfSharp.Pdf.IO.PdfReader.Open(new MemoryStream(pdf), PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import);
-        return Enumerable.Range(0, d.PageCount).Select(i => d.Pages[i].Elements.GetString("/Marker")).ToList();
+        return Enumerable.Range(0, d.PageCount).Select(i => { int w = (int)Math.Round(d.Pages[i].MediaBox.Width); return (char)('a' + w / 100 - 1) + (w % 100).ToString(); }).ToList();
     }
     bool PdfFails(Action a) { try { a(); return false; } catch (PdfToolException) { return true; } }
     string Sha(byte[] b) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(b));
@@ -397,6 +400,342 @@ Console.WriteLine("=== Image maths (executed C#) ===");
     Check(ImageMath.ClampQuality(0) == 1 && ImageMath.ClampQuality(500) == 100 && ImageMath.ClampQuality(85) == 85, "JPEG quality is clamped to 1..100");
     Check(ImageMath.FormatFor("PNG") == "png" && ImageMath.FormatFor("jpeg") == "jpg" && ImageMath.FormatFor("jpg") == "jpg" && ImageMath.FormatFor("bmp") == "bmp" && ImageMath.FormatFor("tiff") == "tiff" && ImageMath.FormatFor("exe") == null && ImageMath.FormatFor(null) == null, "output formats are an allowlist (png, jpg, bmp, tiff, gif)");
     Check(ImageMath.IsImageFile("a.JPG") && ImageMath.IsImageFile("a.webp") && !ImageMath.IsImageFile("a.pdf") && !ImageMath.IsImageFile("a"), "image file detection by extension");
+}
+
+Console.WriteLine();
+Console.WriteLine("=== Filter engine (executed C#) ===");
+{
+    FilterEngine Fe(params string[] lines) { var e = new FilterEngine(); e.AddList(string.Join("\n", lines), "t"); return e; }
+    bool Blk(FilterEngine e, string url, string page = "https://page.example/", ResType t = ResType.Script) => e.Match(url, page, t).Blocked;
+
+    var feA = Fe("||ads.example.com^");
+    Check(Blk(feA, "https://ads.example.com/x.js") && Blk(feA, "https://sub.ads.example.com/a") && Blk(feA, "https://ads.example.com:8443/a") && Blk(feA, "https://ads.example.com"), "domain rule ||ads.example.com^ blocks the host, its subdomains, explicit ports and the bare host");
+    Check(!Blk(feA, "https://example.com/x.js") && !Blk(feA, "https://ads.example.com.evil.com/x.js") && !Blk(feA, "https://notads.example.com/x.js") && !Blk(feA, "https://example.com/ads.example.com/x"), "domain rule does not match the parent, a look-alike suffix, a longer label, or the text appearing in a path");
+    Check(Blk(feA, "https://good.com@ads.example.com/x") && !Blk(feA, "https://ads.example.com@good.com/x") && !Blk(feA, "https://good.com:pw@good.com/ads.example.com"), "userinfo tricks: the real host is what is matched");
+    var feB = Fe("||example.com/path");
+    Check(Blk(feB, "https://example.com/path/x") && Blk(feB, "https://www.example.com/path?q=1") && !Blk(feB, "https://example.com/other"), "domain + path rule");
+    var feC = Fe("/banner/ad_", "||tracker.net/*/pixel.gif", "|https://exact.example/ad.js|");
+    Check(Blk(feC, "https://x.test/banner/ad_1.png", t: ResType.Image) && !Blk(feC, "https://x.test/banners/ad_1.png", t: ResType.Image), "plain path rule needs the whole token ('/banner/' matches, '/banners/' does not)");
+    Check(Blk(feC, "https://tracker.net/a/b/pixel.gif", t: ResType.Image) && !Blk(feC, "https://tracker.net/pixel.gif", t: ResType.Image), "wildcard rule: '*' spans path parts, literal slashes still required");
+    Check(Blk(feC, "https://exact.example/ad.js") && !Blk(feC, "https://exact.example/ad.js?x=1") && !Blk(feC, "http://exact.example/ad.js") && !Blk(feC, "https://sub.exact.example/ad.js"), "start and end anchors (|...|) match exactly");
+    var feD = Fe("||cdn.example.com^$script", "||tp.example^$third-party", "||fp.example^$~third-party", "||both.example^$image,script", "||notimg.example^$~image");
+    Check(Blk(feD, "https://cdn.example.com/a.js", t: ResType.Script) && !Blk(feD, "https://cdn.example.com/a.png", t: ResType.Image), "type option: $script blocks scripts only");
+    Check(Blk(feD, "https://tp.example/x", "https://news.test/") && !Blk(feD, "https://tp.example/x", "https://www.tp.example/") && !Blk(feD, "https://tp.example/x", "https://tp.example/"), "$third-party blocks only across sites (same registrable domain is first-party)");
+    Check(!Blk(feD, "https://fp.example/x", "https://news.test/") && Blk(feD, "https://fp.example/x", "https://fp.example/"), "$~third-party blocks only first-party requests");
+    Check(Blk(feD, "https://both.example/a", t: ResType.Image) && Blk(feD, "https://both.example/a", t: ResType.Script) && !Blk(feD, "https://both.example/a", t: ResType.Font), "several types in one rule");
+    Check(Blk(feD, "https://notimg.example/a", t: ResType.Script) && !Blk(feD, "https://notimg.example/a", t: ResType.Image), "negated type $~image");
+    var feE = Fe("||widget.test^$domain=news.com|~sports.news.com");
+    Check(Blk(feE, "https://widget.test/w.js", "https://news.com/a") && Blk(feE, "https://widget.test/w.js", "https://www.news.com/a") && !Blk(feE, "https://widget.test/w.js", "https://sports.news.com/a") && !Blk(feE, "https://widget.test/w.js", "https://other.com/a"), "domain= option includes, excludes and covers subdomains of the page host");
+    var feF = Fe("||ads.example.com^", "@@||ads.example.com/allowed^", "||hard.example^$important", "@@||hard.example^");
+    var mAllow = feF.Match("https://ads.example.com/allowed/x.js", "https://p.test/", ResType.Script);
+    Check(!mAllow.Blocked && mAllow.Rule != null && mAllow.Rule.StartsWith("@@") && Blk(feF, "https://ads.example.com/other.js"), "exception rule (@@) overrides a block only for what it names");
+    Check(Blk(feF, "https://hard.example/x.js"), "$important blocks even when an exception matches");
+    var feG = Fe("||page.test^", "||doc.test^$document");
+    Check(!Blk(feG, "https://page.test/", t: ResType.Document) && Blk(feG, "https://page.test/", t: ResType.Subdocument) && Blk(feG, "https://doc.test/", t: ResType.Document), "rules do not block top-level navigation unless they say $document");
+    var feH = Fe("0.0.0.0 evil.example # comment", "127.0.0.1 localhost", "0.0.0.0 0.0.0.0", "0.0.0.0\ttab.example", "127.0.0.1 two words.example", "0.0.0.0 bad_host");
+    Check(Blk(feH, "https://evil.example/x") && Blk(feH, "https://sub.evil.example/x") && Blk(feH, "https://tab.example/x") && !Blk(feH, "https://localhost/x"), "hosts-file lines become host rules; localhost is never blocked");
+    Check(feH.Rejected >= 3, "malformed hosts lines are counted as rejected (" + feH.Rejected + ")");
+    var feI = Fe("! comment", "[Adblock Plus 2.0]", "/regex\\d+/", "||x.example^$redirect=noopjs", "||y.example^$csp=script-src 'none'", "example.com##+js(abort-on-property-read, x)", "example.com#?#div:has-text(Ad)", "||z.example^$badfilter", "||w.example^$unknownoption", "||ok.example^");
+    Check(feI.NetworkRules == 1 && feI.Unsupported >= 6 && Blk(feI, "https://ok.example/x") && !Blk(feI, "https://x.example/x") && !Blk(feI, "https://y.example/x") && !Blk(feI, "https://z.example/x") && !Blk(feI, "https://w.example/x"), "unsupported syntax (regex, redirect, csp, scriptlets, procedural, badfilter, unknown options) is skipped and counted, never guessed (" + feI.Unsupported + " unsupported)");
+    var feJ = Fe("*", "||", "$script", "|", "$third-party", "^", "||*", "$image,domain=a.test");
+    Check(!Blk(feJ, "https://anything.example/x") && feJ.NetworkRules <= 1, "rules that would block everything (empty or all-wildcard patterns) are refused");
+    Check(Blk(feJ, "https://anything.example/x", "https://a.test/", ResType.Image) == (feJ.NetworkRules == 1), "...except when restricted to named domains by domain=");
+
+    // base-list style host entries, including a path entry that the old host-only list could never match
+    var feK = new FilterEngine(); foreach (var h in new[] { "doubleclick.net", "facebook.com/tr", "t.co", "bad host!" }) feK.AddHostBlock(h, "base");
+    Check(Blk(feK, "https://ad.doubleclick.net/x") && Blk(feK, "https://www.facebook.com/tr?id=1") && !Blk(feK, "https://www.facebook.com/home") && Blk(feK, "https://t.co/abc") && feK.Rejected == 1, "AddHostBlock: host entries and host/path entries both work (the path entry matches only that path); junk is rejected");
+
+    // cosmetic
+    var feL = Fe("##.ad-banner", "example.com##.promo", "~example.com##.sponsored", "example.com#@#.ad-banner", "##div[class^=\"ad-\"]", "a{}body{display:none}##x", "##x;y", "##a/*", "##url(x)", "example.com##.x:has-text(Buy)", "##a:-abp-has(b)", "##@import x", "##.ok > .child");
+    var cssEx = feL.CosmeticCssFor("www.example.com"); var cssOther = feL.CosmeticCssFor("other.org");
+    Check(cssEx.Contains(".promo{display:none!important}") && !cssEx.Contains(".ad-banner") && !cssEx.Contains(".sponsored") && cssEx.Contains("div[class^=\"ad-\"]{display:none!important}"), "cosmetic: domain rules apply to subdomains, #@# unhides, ~domain excludes the generic rule");
+    Check(cssOther.Contains(".ad-banner{display:none!important}") && cssOther.Contains(".sponsored{display:none!important}") && !cssOther.Contains(".promo") && cssOther.Contains(".ok > .child{display:none!important}"), "cosmetic: generic rules apply elsewhere; child combinators allowed");
+    Check(!cssOther.Contains("body{display:none}") && !cssOther.Contains("x;y") && !cssOther.Contains("/*") && !cssOther.Contains("url(") && !cssOther.Contains("@import") && !cssOther.Contains("has-text") && !cssOther.Contains("-abp-"), "cosmetic: selectors that could escape the CSS rule, or need procedural matching, are rejected");
+    Check(feL.CosmeticCssFor("") == "" && feL.CosmeticCssFor(null) == "" && feL.CosmeticCssFor("EXAMPLE.COM").Contains(".promo"), "cosmetic: empty host gives no CSS; host matching is case-insensitive");
+    Check(new[] { "div[class^=\"ad-\"]", "a[href*=\"/ads/\"]", "#sidebar > .ad", ".a, .b", "ul li:nth-child(2n+1)" }.All(FilterEngine.IsSafeSelector) && new[] { "a{}", "a;b", "a\\b", "a/*b", "url(javascript:x)", "x:has-text(a)", "", "  ", "a<b", "@media x", "a\nb", new string('a', 500) }.All(s => !FilterEngine.IsSafeSelector(s)), "selector safety: valid selectors accepted, injection attempts and oversized/empty ones rejected");
+
+    // public suffix / third-party
+    var psl = new PublicSuffixList();
+    Check(psl.Registrable("a.b.example.co.uk") == "example.co.uk" && psl.Registrable("www.example.com") == "example.com" && psl.Registrable("example.com") == "example.com" && psl.Registrable("foo.github.io") == "foo.github.io" && psl.Registrable("x.y.github.io") == "y.github.io", "registrable domain: multi-part suffixes and private suffixes (github.io) are respected");
+    Check(psl.Registrable("localhost") == "localhost" && psl.Registrable("127.0.0.1") == "127.0.0.1" && psl.Registrable("[::1]") == "[::1]" && psl.Registrable("co.uk") == "co.uk" && psl.Registrable("") == "" && psl.Registrable(null) == "" && psl.Registrable("Example.COM.") == "example.com", "registrable domain: single labels, IPs, a bare public suffix, empty/null, case and trailing dot");
+    Check(psl.Registrable("a.b.compute.amazonaws.com") == "a.b.compute.amazonaws.com", "registrable domain: wildcard suffix rule (*.compute.amazonaws.com)");
+    psl.Parse("*.ck !www.ck");
+    Check(psl.Registrable("a.b.ck") == "a.b.ck" && psl.Registrable("www.ck") == "www.ck", "registrable domain: PSL wildcard and exception rules");
+
+    // hostile input and pathological matching
+    var feM = new FilterEngine();
+    var junk = new StringBuilder(); var rng = new Random(11);
+    for (int i = 0; i < 3000; i++) { var b = new char[rng.Next(1, 300)]; for (int j = 0; j < b.Length; j++) b[j] = (char)rng.Next(0, 300); junk.Append(new string(b).Replace('\n', ' ')).Append('\n'); }
+    junk.Append(new string('a', 100000)).Append('\n').Append("||").Append(new string('*', 5000)).Append('\n').Append("$").Append(new string(',', 1000)).Append('\n');
+    bool junkOk = true; try { feM.AddList(junk.ToString(), "junk"); feM.Match("https://a.example/" + new string('x', 3000), "https://b.example/", ResType.Script); } catch { junkOk = false; }
+    Check(junkOk, "a hostile list (random characters, 100,000-character line, 5,000 wildcards) loads without throwing");
+    var feN = Fe("*a*a*a*a*a*a*a*a*a*a*b", "||x.test/*a*a*a*a*a*a*c");
+    var swF = System.Diagnostics.Stopwatch.StartNew(); bool anyBlocked = false;
+    for (int i = 0; i < 2000; i++) anyBlocked |= Blk(feN, "https://x.test/" + new string('a', 3000));
+    swF.Stop();
+    Check(!anyBlocked && swF.ElapsedMilliseconds < 5000, "worst-case wildcard rules against 3,000-character URLs stay fast (2,000 lookups in " + swF.ElapsedMilliseconds + " ms)");
+    Check(!Blk(feA, new string('a', 5000)) && !Blk(feA, "") && !Blk(feA, null!) && !Blk(feA, "not a url") && !Blk(feA, "https://"), "malformed, empty, null and over-long URLs never throw and are not blocked");
+
+    // performance at EasyList scale
+    var perf = new FilterEngine(); var sbp = new StringBuilder();
+    for (int i = 0; i < 60000; i++) sbp.Append("||host").Append(i).Append(".example^\n");
+    for (int i = 0; i < 30000; i++) sbp.Append("/ad").Append(i).Append("/banner_$image\n");
+    for (int i = 0; i < 20000; i++) sbp.Append("||trk").Append(i).Append(".test/*/track").Append(i).Append(".js\n");
+    for (int i = 0; i < 10000; i++) sbp.Append("##.promo-box-").Append(i).Append('\n');
+    var swL = System.Diagnostics.Stopwatch.StartNew(); perf.AddList(sbp.ToString(), "perf"); swL.Stop();
+    Check(perf.NetworkRules == 110000 && perf.CosmeticRules == 4000 && swL.ElapsedMilliseconds < 20000, "loads a 120,000-rule list (" + perf.NetworkRules + " network, " + perf.CosmeticRules + " cosmetic: 10,000 offered, generic hiding capped at 4,000 per page) in " + swL.ElapsedMilliseconds + " ms");
+    var urls = new List<string>(); for (int i = 0; i < 60000; i++) urls.Add(i % 3 == 0 ? "https://host" + (i * 7 % 70000) + ".example/p/" + i + ".js" : i % 3 == 1 ? "https://site" + i + ".org/ad" + (i % 40000) + "/banner_" + i + ".png" : "https://cdn" + i + ".net/assets/app." + i + ".js?v=" + i);
+    int hits = 0; var swM = System.Diagnostics.Stopwatch.StartNew();
+    foreach (var u in urls) if (perf.Match(u, "https://page.example/", u.EndsWith(".png") ? ResType.Image : ResType.Script).Blocked) hits++;
+    swM.Stop();
+    Check(hits > 15000 && swM.ElapsedMilliseconds < 8000, "60,000 lookups against 110,000 network rules: " + hits + " blocked, " + swM.ElapsedMilliseconds + " ms total (" + (swM.Elapsed.TotalMilliseconds * 1000 / urls.Count).ToString("0.0") + " µs per request)");
+    Check(perf.Match("https://host5.example/x.js", "https://p.test/", ResType.Script).Blocked && perf.Match("https://x.org/ad77/banner_1.png", "https://p.test/", ResType.Image).Blocked && perf.Match("https://trk9.test/a/b/track9.js", "https://p.test/", ResType.Script).Blocked && perf.Match("https://host5.example/x.png", "https://p.test/", ResType.Image).Blocked && !perf.Match("https://host99999999.example/x.js", "https://p.test/", ResType.Script).Blocked, "performance set: spot checks of each rule kind behave correctly");
+}
+
+Console.WriteLine();
+Console.WriteLine("=== Full-page screenshot to PDF (executed C#) ===");
+{
+    byte[] FpJpeg(int w, int h, int comps = 3, int precision = 8, int sof = 0xC0)
+    {
+        var l = new List<byte> { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, (byte)sof };
+        int len = 8 + 3 * comps; l.Add((byte)(len >> 8)); l.Add((byte)len); l.Add((byte)precision);
+        l.Add((byte)(h >> 8)); l.Add((byte)h); l.Add((byte)(w >> 8)); l.Add((byte)w); l.Add((byte)comps);
+        for (int i = 0; i < comps; i++) { l.Add((byte)(i + 1)); l.Add(0x11); l.Add(0); }
+        l.Add(0xFF); l.Add(0xD9); return l.ToArray();
+    }
+    // layout planning
+    var fpA = PagePlanner.Plan(1190, 5000, "a4", 8000);
+    Check(fpA.Tiles.Count == 1 && fpA.Pages.Count == 3, "A4: 1190x5000 css -> 1 tile, 3 pages (got " + fpA.Tiles.Count + "/" + fpA.Pages.Count + ")");
+    Check(Math.Abs(fpA.PtPerCss - 0.5002) < 0.001, "A4 scale fits the paper width");
+    Check(fpA.Pages.All(p => Math.Abs(p.WidthPt - 595.28) < 0.01 && Math.Abs(p.HeightPt - 841.89) < 0.01), "A4 pages are paper sized");
+    Check(fpA.Pages.Sum(p => p.Height) == 5000 && fpA.Pages[0].Top == 0 && fpA.Pages[1].Top == fpA.Pages[0].Height, "page slices tile the page exactly, no gap or overlap");
+    var fpL = PagePlanner.Plan(1000, 2000, "letter", 8000);
+    Check(Math.Abs(fpL.Pages[0].WidthPt - 612) < 0.01 && Math.Abs(fpL.Pages[0].HeightPt - 792) < 0.01, "Letter paper size");
+    var fpS = PagePlanner.Plan(1000, 3000, "single", 8000);
+    Check(fpS.Pages.Count == 1 && Math.Abs(fpS.Pages[0].WidthPt - 750) < 0.01 && Math.Abs(fpS.Pages[0].HeightPt - 2250) < 0.01, "single page is actual size (0.75 pt per css px)");
+    var fpT = PagePlanner.Plan(1000, 20000, "single", 8000);
+    Check(fpT.Pages[0].HeightPt <= PagePlanner.MaxPdfPt + 0.001 && fpT.Pages[0].HeightPt > 14000, "single page is shrunk to stay under the PDF size limit");
+    var fpTall = PagePlanner.Plan(1000, 20000, "a4", 8000);
+    Check(fpTall.Tiles.Count == 3 && fpTall.Tiles.Sum(t => t.Height) == 20000 && fpTall.Tiles[1].Top == 8000, "20000 px is cut into 3 capture tiles that add up");
+    var fpBig = PagePlanner.Plan(9000, 90000, "a4", 8000);
+    Check(fpBig.Truncated && fpBig.WidthCss == PagePlanner.MaxWidthCss && fpBig.HeightCss == PagePlanner.MaxHeightCss, "oversized pages are clamped and flagged");
+    bool fpThrew = false; try { PagePlanner.Plan(0, 10, "a4", 8000); } catch (ImagePdfException) { fpThrew = true; } Check(fpThrew, "zero-size page refused");
+    fpThrew = false; try { PagePlanner.Plan(100, 60000, "a4", 8000); } catch (ImagePdfException) { fpThrew = true; } Check(fpThrew, "a plan needing over 300 pages is refused (use the single layout)");
+    Check(PagePlanner.Plan(500, 500, "bogus", 8000).Layout == "a4", "unknown layout falls back to A4");
+    // every css pixel is covered by exactly one page slice and by at least one tile placed on that page
+    {
+        var pl = PagePlanner.Plan(1234, 12345, "a4", 5000); bool covered = true;
+        foreach (var pg in pl.Pages)
+        {
+            var pls = PagePlanner.Placements(pl, pg);
+            for (int y = pg.Top; y < pg.Top + pg.Height; y += 37)
+                if (!pls.Any(q => pl.Tiles[q.Tile].Top <= y && y < pl.Tiles[q.Tile].Top + pl.Tiles[q.Tile].Height)) covered = false;
+        }
+        Check(covered, "every row of every page is covered by a placed tile");
+    }
+    // JPEG header parsing
+    Check(ImagePdf.ParseJpeg(FpJpeg(800, 600)) == new JpegInfo(800, 600, 3), "JPEG size read");
+    Check(ImagePdf.ParseJpeg(FpJpeg(70, 9000, 1)) == new JpegInfo(70, 9000, 1), "grey JPEG, 16-bit height");
+    Check(ImagePdf.ParseJpeg(FpJpeg(10, 10, 3, 8, 0xC2)).Width == 10, "progressive JPEG accepted");
+    foreach (var (bad, why) in new (byte[], string)[] { (FpJpeg(10, 10, 4), "CMYK"), (FpJpeg(10, 10, 3, 12), "12-bit"), (FpJpeg(10, 10, 3, 8, 0xC3), "lossless"), (new byte[] { 1, 2, 3, 4, 5 }, "not a JPEG"), (Array.Empty<byte>(), "empty"), (new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 }, "no frame header"), (FpJpeg(0, 10), "zero width") })
+    {
+        fpThrew = false; try { ImagePdf.ParseJpeg(bad); } catch (ImagePdfException) { fpThrew = true; } Check(fpThrew, "bad JPEG refused: " + why);
+    }
+    // the PDF itself
+    var fpPlan = PagePlanner.Plan(1190, 5000, "a4", 2000);   // 3 tiles, 3 pages: tile edges fall inside pages
+    var fpTiles = fpPlan.Tiles.Select(t => FpJpeg(1190, t.Height)).ToList();
+    var fpPdf = ImagePdf.Build(fpPlan, fpTiles, "Täst — page ✓", "https://example.com/", new DateTime(2026, 10, 7, 12, 0, 0, DateTimeKind.Utc));
+    var fpText = System.Text.Encoding.Latin1.GetString(fpPdf);
+    Check(fpText.StartsWith("%PDF-1.4") && fpText.TrimEnd().EndsWith("%%EOF"), "PDF header and trailer");
+    {
+        int sx = fpText.LastIndexOf("startxref", StringComparison.Ordinal);
+        long xo = long.Parse(fpText.Substring(sx + 10).Split('\n')[0]);
+        Check(fpText.Substring((int)xo, 4) == "xref", "startxref points at the xref table");
+        var lines = fpText.Substring((int)xo).Split('\n');
+        int count = int.Parse(lines[1].Split(' ')[1]); bool offsetsOk = true;
+        for (int n = 1; n < count; n++)
+        {
+            long off = long.Parse(lines[2 + n].Substring(0, 10));
+            if (!fpText.Substring((int)off).StartsWith(n + " 0 obj")) offsetsOk = false;
+        }
+        Check(offsetsOk && count == 1 + 3 + 3 + 3 * 2, "every xref offset points at its object (" + count + " entries)");
+    }
+    Check(System.Text.RegularExpressions.Regex.Matches(fpText, "/Subtype /Image").Count == 3, "each tile is embedded once even though tiles span pages");
+    Check(fpText.Contains("/Filter /DCTDecode") && fpText.Contains("/DeviceRGB"), "JPEG embedded as DCT data");
+    Check(fpText.Contains("/Title <FEFF") && !fpText.Contains("Täst"), "title stored as UTF-16 hex");
+    Check(fpText.Contains("(D:20261007120000Z)"), "creation date");
+    {
+        using var rd = PdfSharp.Pdf.IO.PdfReader.Open(new MemoryStream(fpPdf), PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import);
+        Check(rd.PageCount == 3, "PDFsharp reads 3 pages");
+        Check(Math.Abs(rd.Pages[0].MediaBox.Width - 595.28) < 0.1 && Math.Abs(rd.Pages[0].MediaBox.Height - 841.89) < 0.1, "PDFsharp reads the A4 media box");
+        // the new file is a normal PDF for the existing page tools
+        Check(PdfTools.PageCount(fpPdf) == 3, "page tools can open a screenshot PDF");
+        Check(PdfTools.PageCount(PdfTools.Extract(fpPdf, "2-3")) == 2, "page tools can extract pages from a screenshot PDF");
+    }
+    fpThrew = false; try { ImagePdf.Build(fpPlan, fpTiles.Take(2).ToList(), "t", "s", DateTime.UtcNow); } catch (ImagePdfException) { fpThrew = true; } Check(fpThrew, "tile count mismatch refused");
+    fpThrew = false; try { var junk = fpTiles.ToList(); junk[1] = new byte[] { 9, 9, 9, 9 }; ImagePdf.Build(fpPlan, junk, "t", "s", DateTime.UtcNow); } catch (ImagePdfException) { fpThrew = true; } Check(fpThrew, "non-JPEG tile refused");
+    var fpOne = PagePlanner.Plan(800, 1000, "single", 8000);
+    var fpOnePdf = ImagePdf.Build(fpOne, new List<byte[]> { FpJpeg(800, 1000) }, "t", "", DateTime.UtcNow);
+    using (var rd1 = PdfSharp.Pdf.IO.PdfReader.Open(new MemoryStream(fpOnePdf), PdfSharp.Pdf.IO.PdfDocumentOpenMode.Import))
+        Check(rd1.PageCount == 1 && Math.Abs(rd1.Pages[0].MediaBox.Width - 600) < 0.1 && Math.Abs(rd1.Pages[0].MediaBox.Height - 750) < 0.1, "single-page PDF has the actual-size media box");
+    var fpTime = System.Diagnostics.Stopwatch.StartNew();
+    var fpHuge = PagePlanner.Plan(1200, 60000, "single", 8000);
+    var fpHugePdf = ImagePdf.Build(fpHuge, fpHuge.Tiles.Select(t => FpJpeg(1200, t.Height)).ToList(), "t", "", DateTime.UtcNow);
+    Check(fpTime.ElapsedMilliseconds < 2000 && fpHuge.Tiles.Count == 8, "a 60000 px page plans and writes quickly (" + fpTime.ElapsedMilliseconds + " ms)");
+}
+
+Console.WriteLine();
+Console.WriteLine("=== Extension governance (executed C#) ===");
+{
+    string? egRoot = null;
+    for (var egd = new DirectoryInfo(AppContext.BaseDirectory); egd != null; egd = egd.Parent)
+        if (File.Exists(Path.Combine(egd.FullName, "samples", "extensions", "hello-good", "manifest.json"))) { egRoot = egd.FullName; break; }
+    Check(egRoot != null, "repository root with samples\\extensions found from the test binary");
+    if (egRoot != null)
+    {
+        var egGood = Path.Combine(egRoot, "samples", "extensions", "hello-good"); var egRev = Path.Combine(egRoot, "samples", "extensions", "hello-review");
+        // A copy of a ledger written by the PowerShell tool is committed as a fixture (proofs\receipts is git-ignored, so a fresh clone or CI has no real ledger).
+        var egLedgerReal = Path.Combine(egRoot, "browser.tests", "fixtures", "extension_governance.powershell_written.v1.ndjson");
+        Check(File.Exists(egLedgerReal), "PowerShell-written ledger fixture present");
+        // identity must equal what the PowerShell implementation recorded for the same bytes
+        var egIdGood = ExtGovernance.ComputeIdentity(egGood); var egIdRev = ExtGovernance.ComputeIdentity(egRev);
+        Check(egIdGood.Id == "c719f88b943a8307a5e6f06f6fd0f7b26fdb4ed07c5f170d76f3e40b7c666b11", "C# identity of hello-good equals the PowerShell ledger id");
+        Check(egIdRev.Id == "7d2fd7563cba40f93bacaf53040f577f626e0c2fa39a9c117b680641fdf22254", "C# identity of hello-review equals the PowerShell ledger id");
+        // the real PowerShell-written ledger verifies in C#
+        var egVer = ExtGovernance.VerifyLedger(egLedgerReal);
+        Check(egVer.Count >= 4, "PowerShell-written ledger verifies in C# (" + egVer.Count + " records)");
+        Check(ExtGovernance.Gate(egLedgerReal, egIdGood.Id).Ok, "load gate: hello-good is allowed");
+        var egGateRev = ExtGovernance.Gate(egLedgerReal, egIdRev.Id);
+        Check(!egGateRev.Ok && egGateRev.Note.Contains("review"), "load gate: hello-review is refused (decision review)");
+        Check(!ExtGovernance.Gate(egLedgerReal, new string('a', 64)).Ok, "load gate: unknown bytes are refused");
+        // policy decisions
+        var egPol = ExtGovernance.ParsePolicy(File.ReadAllText(Path.Combine(egRoot, "config", "extension_policy.v1.json")));
+        Check(ExtGovernance.Decide(ExtGovernance.ReadManifest(egGood), egIdGood.Id, egPol).Decision == "allow", "policy: storage+alarms -> allow");
+        var egDecRev = ExtGovernance.Decide(ExtGovernance.ReadManifest(egRev), egIdRev.Id, egPol);
+        Check(egDecRev.Decision == "review" && egDecRev.Reasons.SequenceEqual(new[] { "review_permission:tabs" }), "policy: tabs -> review with the exact reason");
+        // tampering with a copy of the real ledger
+        var egTmp = Path.Combine(Path.GetTempPath(), "rb-egtest-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(egTmp);
+        try
+        {
+            var egLines = File.ReadAllLines(egLedgerReal).Where(l => l.Trim().Length > 0).ToList();
+            void EgExpectBreak(List<string> lines, string label)
+            {
+                var p = Path.Combine(egTmp, Guid.NewGuid().ToString("N") + ".ndjson"); File.WriteAllLines(p, lines);
+                bool broke = false; try { ExtGovernance.VerifyLedger(p); } catch (ExtGovException) { broke = true; }
+                Check(broke, "ledger break detected: " + label);
+            }
+            EgExpectBreak(egLines.Select((l, i) => i == 1 ? l.Replace("\"review\"", "\"allow\"") : l).ToList(), "decision flipped from review to allow");
+            EgExpectBreak(egLines.Where((l, i) => i != 1).ToList(), "a record removed");
+            EgExpectBreak(new List<string> { egLines[1], egLines[0] }.Concat(egLines.Skip(2)).ToList(), "records reordered");
+            EgExpectBreak(egLines.Select((l, i) => i == 2 ? l.Replace("\"name\":\"", "\"name\":\"x") : l).ToList(), "a field edited");
+            EgExpectBreak(egLines.Concat(new[] { "{not json" }).ToList(), "a garbage line");
+            var egPTamp = Path.Combine(egTmp, "tamp.ndjson"); File.WriteAllLines(egPTamp, egLines.Select((l, i) => i == 1 ? l.Replace("\"review\"", "\"allow\"") : l));
+            Check(!ExtGovernance.Gate(egPTamp, egIdGood.Id).Ok, "a tampered ledger refuses everything, even previously allowed bytes");
+
+            // golden fixture: files with unicode, hidden file, nested folder; .git ignored
+            var egFx = Path.Combine(egTmp, "fx"); Directory.CreateDirectory(Path.Combine(egFx, "sub", "dir")); Directory.CreateDirectory(Path.Combine(egFx, ".git"));
+            File.WriteAllBytes(Path.Combine(egFx, "manifest.json"), System.Text.Encoding.UTF8.GetBytes("{\"manifest_version\":3,\"name\":\"Sample\",\"version\":\"1.2.3\",\"permissions\":[\"storage\",\"tabs\"],\"host_permissions\":[\"https://example.com/*\"],\"content_scripts\":[{\"matches\":[\"https://example.com/*\"],\"js\":[\"cs.js\"]}]}"));
+            File.WriteAllBytes(Path.Combine(egFx, "cs.js"), System.Text.Encoding.UTF8.GetBytes("console.log(\"hi \u00e9\");\n"));
+            File.WriteAllBytes(Path.Combine(egFx, "sub", "dir", "a.txt"), Enumerable.Repeat((byte)'A', 1000).ToArray());
+            File.WriteAllBytes(Path.Combine(egFx, ".hidden"), new[] { (byte)'x' });
+            File.WriteAllText(Path.Combine(egFx, ".git", "config"), "ignored");
+            var egFxId = ExtGovernance.ComputeIdentity(egFx);
+            Check(egFxId.Id == "0358279f2b4109d4937062d5a43e3dc399f2533377d8e651cd7268ba4eb0d088" && egFxId.Files.Count == 4, "golden identity (unicode, hidden file, nested folder, .git ignored)");
+            File.AppendAllText(Path.Combine(egFx, "cs.js"), " ");
+            Check(ExtGovernance.ComputeIdentity(egFx).Id != egFxId.Id, "one changed byte changes the identity");
+            File.WriteAllBytes(Path.Combine(egFx, "cs.js"), System.Text.Encoding.UTF8.GetBytes("console.log(\"hi \u00e9\");\n"));
+            Check(ExtGovernance.ComputeIdentity(egFx).Id == egFxId.Id, "restoring the byte restores the identity");
+
+            // manifest facts
+            var egMan = ExtGovernance.ReadManifest(egFx);
+            Check(egMan.Name == "Sample" && egMan.ManifestVersion == 3 && egMan.Permissions.SequenceEqual(new[] { "storage", "tabs" }) && egMan.HostPermissions.SequenceEqual(new[] { "https://example.com/*" }) && egMan.ContentScriptMatches.Count == 1, "manifest read (permissions, hosts, content script matches)");
+            File.WriteAllText(Path.Combine(egFx, "manifest.json"), "\uFEFF{ // comment\n \"manifest_version\": 2, \"name\": \"Old\", \"version\": \"0.1\", \"permissions\": [\"<all_urls>\", \"*://*/*\", \"storage\", \"http://a.test/*\",], }");
+            var egOld = ExtGovernance.ReadManifest(egFx);
+            Check(egOld.Name == "Old" && egOld.Permissions.SequenceEqual(new[] { "storage" }) && egOld.HostPermissions.Count == 3, "manifest tolerates BOM, comments and trailing commas; host patterns split out of permissions");
+            Check(ExtGovernance.Decide(egOld, "x", egPol).Decision == "deny" && ExtGovernance.Decide(egOld, "x", egPol).Reasons.Contains("denied_permission:<all_urls>"), "policy: <all_urls> is denied");
+            var egMv4 = new ExtManifest { Name = "n", ManifestVersion = 4 };
+            Check(ExtGovernance.Decide(egMv4, "x", egPol).Reasons.Contains("manifest_version_out_of_range:4"), "policy: manifest version out of range is denied");
+            var egUnk = new ExtManifest { Name = "n", ManifestVersion = 3, Permissions = { "somethingNew" } };
+            Check(ExtGovernance.Decide(egUnk, "x", egPol).Decision == "review", "policy: unknown permission -> review (conservative)");
+            var egPol2 = ExtGovernance.ParsePolicy("{\"allowlist\":[\"x\"],\"blocklist\":[\"y\"],\"allowed_permissions\":[\"storage\"],\"review_permissions\":[\"tabs\"],\"denied_permissions\":[\"debugger\"]}");
+            Check(ExtGovernance.Decide(egUnk, "x", egPol2).Decision == "allow", "policy: an allowlisted id turns review into allow");
+            Check(ExtGovernance.Decide(egUnk, "y", egPol2).Decision == "deny", "policy: blocklisted id is denied");
+            Check(ExtGovernance.Decide(new ExtManifest { ManifestVersion = 3, Permissions = { "debugger" } }, "x", egPol2).Decision == "deny", "policy: a denied permission beats the allowlist");
+            bool egBadMan = false; File.WriteAllText(Path.Combine(egFx, "manifest.json"), "{ nope"); try { ExtGovernance.ReadManifest(egFx); } catch (ExtGovException) { egBadMan = true; } Check(egBadMan, "unparseable manifest refused");
+
+            // writing records: install, approve, revoke
+            var egLedger = Path.Combine(egTmp, "mine", "ledger.ndjson");
+            var egM = new ExtManifest { Name = "Sample \"Q\" \\ \u00e9", Version = "1.0", ManifestVersion = 3, Permissions = { "storage", "tabs" } };
+            var egFiles = new List<ExtFile> { new("manifest.json", new string('b', 64), 10), new("a.js", new string('c', 64), 5) };
+            var egR1 = ExtGovernance.Record(egLedger, new string('e', 64), egM, egFiles, "review", new[] { "review_permission:tabs" }, new DateTime(2026, 10, 7, 1, 2, 3, 456, DateTimeKind.Utc));
+            Check(egR1.Seq == 1 && egR1.PrevHash == ExtGovernance.Genesis && egR1.TsUtc == "2026-10-07T01:02:03.456Z", "first record: seq 1, genesis link, timestamp format");
+            Check(!ExtGovernance.Gate(egLedger, new string('e', 64)).Ok, "a review record does not open the gate");
+            var egR2 = ExtGovernance.Record(egLedger, new string('e', 64), egM, egFiles, "allow", new[] { "review_permission:tabs", "user_approved_review" }, DateTime.UtcNow);
+            Check(egR2.Seq == 2 && egR2.PrevHash == egR1.RecordHash && ExtGovernance.Gate(egLedger, new string('e', 64)).Ok, "user approval appends an allow record and opens the gate");
+            var egR3 = ExtGovernance.Record(egLedger, new string('e', 64), egM, egFiles, "deny", new[] { "user_removed" }, DateTime.UtcNow);
+            Check(!ExtGovernance.Gate(egLedger, new string('e', 64)).Ok && egR3.Seq == 3, "removing appends a deny record and closes the gate again");
+            Check(ExtGovernance.VerifyLedger(egLedger).Count == 3, "the ledger written by C# verifies");
+            var egText = File.ReadAllText(egLedger);
+            Check(!egText.Contains('\r') && egText.EndsWith("\n"), "records are LF terminated like the PowerShell writer");
+            Check(egText.Split('\n', StringSplitOptions.RemoveEmptyEntries).All(l => { using var dj = System.Text.Json.JsonDocument.Parse(l); return ExtGovernance.Canon(ExtGovernance.ToObj(dj.RootElement)) == l; }), "every written line is already in canonical form");
+            File.WriteAllText(egLedger, egText.Replace("user_removed", "user_kept"));
+            bool egRefused = false; try { ExtGovernance.Record(egLedger, new string('e', 64), egM, egFiles, "allow", Array.Empty<string>(), DateTime.UtcNow); } catch (ExtGovException) { egRefused = true; } Check(egRefused, "nothing is appended to a ledger that does not verify");
+
+            // packages
+            byte[] EgZip(params (string Name, string Body)[] entries)
+            {
+                using var ms = new MemoryStream();
+                using (var za = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+                    foreach (var (n, b) in entries) { var e = za.CreateEntry(n); using var w = new StreamWriter(e.Open()); w.Write(b); }
+                return ms.ToArray();
+            }
+            var egOk = EgZip(("manifest.json", "{\"manifest_version\":3,\"name\":\"z\",\"version\":\"1\"}"), ("js/a.js", "1"));
+            var egOut = Path.Combine(egTmp, "u1"); Check(ExtPackage.Unpack(egOk, egOut) == egOut && File.Exists(Path.Combine(egOut, "js", "a.js")), "ZIP unpacks");
+            var egWrap = EgZip(("repo-main/manifest.json", "{}"), ("repo-main/a.js", "1"));
+            Check(Path.GetFileName(ExtPackage.Unpack(egWrap, Path.Combine(egTmp, "u2"))) == "repo-main", "a single wrapping folder (GitHub archive) is resolved");
+            foreach (var bad in new[] { "../evil.txt", "..\\evil.txt", "/abs.txt", "C:/x.txt", "a/../../b.txt", "a\\b.txt", "x./y", "con .txt " })
+            {
+                bool refused = false; try { ExtPackage.Unpack(EgZip(("manifest.json", "{}"), (bad, "x")), Path.Combine(egTmp, "u3-" + Guid.NewGuid().ToString("N"))); } catch (ExtGovException) { refused = true; }
+                Check(refused, "unsafe package path refused: " + bad);
+            }
+            Check(!File.Exists(Path.Combine(egTmp, "evil.txt")), "nothing was written outside the destination");
+            bool egNoMan = false; try { ExtPackage.Unpack(EgZip(("a.js", "1")), Path.Combine(egTmp, "u4")); } catch (ExtGovException) { egNoMan = true; } Check(egNoMan, "package without a top-level manifest refused");
+            bool egNotZip = false; try { ExtPackage.Unpack(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }, Path.Combine(egTmp, "u5")); } catch (ExtGovException) { egNotZip = true; } Check(egNotZip, "random bytes refused");
+            // CRX3 and CRX2 wrappers
+            byte[] EgCrx(int ver, byte[] zip)
+            {
+                var hdr = new List<byte>(System.Text.Encoding.ASCII.GetBytes("Cr24")); hdr.AddRange(BitConverter.GetBytes((uint)ver));
+                if (ver == 3) { hdr.AddRange(BitConverter.GetBytes((uint)5)); hdr.AddRange(new byte[5]); }
+                else { hdr.AddRange(BitConverter.GetBytes((uint)3)); hdr.AddRange(BitConverter.GetBytes((uint)4)); hdr.AddRange(new byte[7]); }
+                hdr.AddRange(zip); return hdr.ToArray();
+            }
+            Check(File.Exists(Path.Combine(ExtPackage.Unpack(EgCrx(3, egOk), Path.Combine(egTmp, "u6")), "manifest.json")), "CRX3 unpacks");
+            Check(File.Exists(Path.Combine(ExtPackage.Unpack(EgCrx(2, egOk), Path.Combine(egTmp, "u7")), "manifest.json")), "CRX2 unpacks");
+            var egBadCrx = EgCrx(3, egOk); BitConverter.GetBytes(uint.MaxValue).CopyTo(egBadCrx, 8);
+            bool egCrxBad = false; try { ExtPackage.Unpack(egBadCrx, Path.Combine(egTmp, "u8")); } catch (ExtGovException) { egCrxBad = true; } Check(egCrxBad, "CRX with an out-of-range header length refused");
+            Check(ExtPackage.IsSafeEntryName("a/b/c.js") && ExtPackage.IsSafeEntryName("dir/") && !ExtPackage.IsSafeEntryName("") && !ExtPackage.IsSafeEntryName(new string('a', 500)), "entry-name rules");
+        }
+        finally { try { Directory.Delete(egTmp, true); } catch { } }
+    }
+}
+
+Console.WriteLine();
+Console.WriteLine("=== Engine version, pop-up and external-link rules (executed C#) ===");
+{
+    Check(RuntimeCheck.Parse("141.0.3537.57")!.SequenceEqual(new[] { 141, 0, 3537, 57 }) && RuntimeCheck.Parse("142.0.3595.3 canary")![0] == 142 && RuntimeCheck.Parse("109")!.Length == 1, "engine version parsing");
+    Check(RuntimeCheck.Parse(null) == null && RuntimeCheck.Parse("") == null && RuntimeCheck.Parse("abc") == null && RuntimeCheck.Parse("1.2.x") == null && RuntimeCheck.Parse("-1.2") == null && RuntimeCheck.Parse("1..2") == null && RuntimeCheck.Parse("1.2.3.4.5.6.7") == null, "garbage version strings are rejected, not guessed");
+    Check(RuntimeCheck.Compare(new[] { 141, 0, 1, 1 }, new[] { 141, 0, 1, 2 }) < 0 && RuntimeCheck.Compare(new[] { 142 }, new[] { 141, 9, 9, 9 }) > 0 && RuntimeCheck.Compare(new[] { 141, 0 }, new[] { 141, 0, 0, 0 }) == 0, "version comparison");
+    Check(RuntimeCheck.Assess("109.0.1518.78") == RuntimeCheck.Verdict.TooOld && RuntimeCheck.Assess("127.9.9.9") == RuntimeCheck.Verdict.TooOld && RuntimeCheck.Assess("128.0.0.0") == RuntimeCheck.Verdict.Ok && RuntimeCheck.Assess("150.1.2.3") == RuntimeCheck.Verdict.Ok && RuntimeCheck.Assess("nonsense") == RuntimeCheck.Verdict.Unknown, "engine freshness verdict around the floor");
+    Check(PopupRules.Decide("https://a.test/", true, false) == PopupVerdict.Allow && PopupRules.Decide("http://a.test/", true, false) == PopupVerdict.Allow && PopupRules.Decide("about:blank", true, false) == PopupVerdict.Allow && PopupRules.Decide("", true, false) == PopupVerdict.Allow, "a pop-up from your click to a web address is allowed");
+    Check(PopupRules.Decide("https://a.test/", false, false) == PopupVerdict.BlockedNoGesture && PopupRules.Decide("about:blank", false, false) == PopupVerdict.BlockedNoGesture, "a scripted pop-up is blocked");
+    Check(PopupRules.Decide("https://a.test/", false, true) == PopupVerdict.Allow, "a scripted pop-up is allowed for a site you allowed");
+    foreach (var u in new[] { "file:///C:/Windows/win.ini", "javascript:alert(1)", "data:text/html,<b>x", "ms-msdt:/id", "search-ms:query=x", "chrome-extension://abc/page.html", "blob:https://a.test/1", "ftp://a.test/", "  FILE:///x" })
+        Check(PopupRules.Decide(u, true, true) == PopupVerdict.BlockedScheme, "pop-up to a non-web scheme is always blocked: " + u);
+    Check(PopupRules.Decide(null, true, false) == PopupVerdict.Allow, "null address is treated as blank");
+    Check(ExternalUriRules.Allowed("mailto:a@b.test", true) && ExternalUriRules.Allowed("TEL:+123", true) && !ExternalUriRules.Allowed("mailto:a@b.test", false), "mailto:/tel: pass only when you clicked");
+    foreach (var u in new[] { "ms-msdt:/id PCWDiagnostic", "search-ms:query=a", "ms-officecmd:x", "calculator:", "steam://run/1", "vscode://file/x", "javascript:x", "", "nocolon", ":x", "x" })
+        Check(!ExternalUriRules.Allowed(u, true), "external program launch is blocked: '" + u + "'");
+    Check(ExternalUriRules.SchemeOf("MS-MSDT:/x") == "ms-msdt" && ExternalUriRules.SchemeOf("nocolon") == "unknown" && ExternalUriRules.SchemeOf(null) == "unknown", "scheme extraction for the status line");
 }
 
 Console.WriteLine();

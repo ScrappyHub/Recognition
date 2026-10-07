@@ -51,9 +51,61 @@ if($navGlue -notmatch 'DownloadRules\.Assess'){ $bad += "downloads must be asses
 if($navGlue -notmatch 'isTrusted'){ $bad += "keyboard shortcut script must ignore synthetic (untrusted) events" }
 if($navGlue -notmatch 'PrivacyRules\.HttpsUpgrade'){ $bad += "navigation must use PrivacyRules.HttpsUpgrade (parsed-host loopback check)" }
 if($navGlue -match 'StartsWith\("http://localhost"|StartsWith\("http://127\.0\.0\.1"'){ $bad += "regression: prefix-based localhost exemption (http://localhost.evil.com bypass) is back" }
+# Shield + filter engine invariants.
+$fe = Get-Content -LiteralPath (Join-Path $bdir "FilterEngine.cs") -Raw
+$fg = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Filters.cs") -Raw
+$sj = Get-Content -LiteralPath (Join-Path $bdir "shield\fingerprint_shield.js") -Raw
+if($fe -match 'HttpClient|WebClient|WebRequest|TcpClient|UdpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|System\.Text\.RegularExpressions'){ $bad += "FilterEngine.cs must stay local-only and regex-free (no network, processes, dynamic code, or backtracking regex on hostile lists)" }
+if($fg -match 'Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|TcpClient|UdpClient|WebClient'){ $bad += "MainWindow.Filters.cs may only use HttpClient for the list updater" }
+if(([regex]::Matches($fg, 'new HttpClient\(')).Count -ne 1){ $bad += "exactly one HttpClient (the user-initiated list updater) is allowed in MainWindow.Filters.cs" }
+if($fg -notmatch 'Scheme != Uri\.UriSchemeHttps'){ $bad += "list updater must refuse non-https URLs" }
+if($fg -notmatch 'MaxListBytes'){ $bad += "list updater must cap download size" }
+if($fg -notmatch 'filters\.update'){ $bad += "list updates must be receipted (filters.update with SHA-256)" }
+if($sj -match '(?m)^[^/\r\n]*postMessage\('){ $bad += "fingerprint_shield.js must not use postMessage (the host refuses commands from web content)" }
+if($sj -match '\beval\s*\(|new Function|document\.write'){ $bad += "fingerprint_shield.js must not use eval/new Function/document.write" }
+$pk = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Passkeys.cs") -Raw
+$pg = Get-Content -LiteralPath (Join-Path $bdir "shield\passkey_guard.js") -Raw
+if($pk -match 'HttpClient|WebClient|WebRequest|Assembly\.Load|Activator\.Create'){ $bad += "MainWindow.Passkeys.cs must not make outbound requests or load code" }
+if(([regex]::Matches($pk, 'Prefixes\.Add\(')).Count -ne 1 -or $pk -notmatch 'Prefixes\.Add\("http://localhost:"'){ $bad += "the passkey test server must listen on exactly one http://localhost:<port>/ prefix" }
+if($pk -match 'http://\+|http://\*|0\.0\.0\.0|IPAddress\.Any'){ $bad += "the passkey test server must never bind beyond loopback" }
+if($pk -notmatch 'UserHostName'){ $bad += "the passkey test server must check the Host header (DNS rebinding)" }
+if($pk -notmatch 'RandomNumberGenerator'){ $bad += "the passkey test path must contain an unguessable token" }
+if($pg -match '(?m)^[^/\r\n]*postMessage\(' -or $pg -match '\beval\s*\(|new Function'){ $bad += "passkey_guard.js must not use postMessage/eval" }
+if($pk -match '_actions\?\.Append\([^;]*(challenge|rawId|credential|signature)'){ $bad += "passkey receipts must never carry credential data" }
+$eg = Get-Content -LiteralPath (Join-Path $bdir "ExtensionGovernance.cs") -Raw
+$ex = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Extensions.cs") -Raw
+if($eg -match 'HttpClient|WebClient|WebRequest|TcpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create'){ $bad += "ExtensionGovernance.cs must stay local-only" }
+if($ex -match 'Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|TcpClient|WebClient'){ $bad += "MainWindow.Extensions.cs must not spawn processes or load code" }
+if(([regex]::Matches($ex, 'new HttpClient\(')).Count -ne 1 -or $ex -notmatch 'Scheme != Uri\.UriSchemeHttps' -or $ex -notmatch 'MaxExtDownloadBytes'){ $bad += "extension download must be one https-only, size-capped HttpClient" }
+if(([regex]::Matches($ex, 'AddBrowserExtensionAsync\(')).Count -ne 3){ $bad += "AddBrowserExtensionAsync may only be called by the gated loader, the gated enable path, and the isolated test profile" }
+if($navGlue -match 'AddBrowserExtensionAsync'){ $bad += "MainWindow.xaml.cs must not register extensions itself" }
+if(([regex]::Matches($ex, 'GateDirectory\(')).Count -lt 4){ $bad += "every extension load path must pass GateDirectory (identity recomputed + ledger allow)" }
+$iDeny = $ex.IndexOf('decision == "deny"'); $iCopy = $ex.IndexOf('CopyDirectory(p.Root, dst)')
+if($iDeny -lt 0 -or $iCopy -lt 0 -or $iDeny -gt $iCopy){ $bad += "a policy-denied extension must be refused before anything is copied into runtime\extensions" }
+if($ex -notmatch 'user_approved_review' -or $ex -notmatch 'ExtGovernance\.Record\('){ $bad += "installs and approvals must be recorded in the governance ledger" }
+if($ex -notmatch 'removed_unapproved'){ $bad += "extensions the browser did not approve must be removed from the engine profile at startup" }
+$hd = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Hardening.cs") -Raw
+if($hd -notmatch 'PopupRules\.Decide' -or $hd -notmatch 'LaunchingExternalUriScheme' -or $hd -notmatch 'ExternalUriRules\.Allowed'){ $bad += "pop-up and external-program rules must be wired in MainWindow.Hardening.cs" }
+if($hd -notmatch 'origin\?\.Private'){ $bad += "a pop-up opened from a private tab must stay private" }
+if($navGlue -match 'private void OnNewWindowRequested'){ $bad += "the old unconditional pop-up handler must not return" }
+if($navGlue -notmatch "Content-Security-Policy"){ $bad += "internal pages must carry a Content-Security-Policy" }
+if($navGlue -notmatch '_filters\.Match\('){ $bad += "OnResourceRequested must use the filter engine" }
+if($navGlue -notmatch 'RegisterShieldAsync'){ $bad += "every tab must register the fingerprint shield" }
 if($bad.Count -gt 0){ $bad | ForEach-Object { Write-Host ("BROWSER_TESTS_FAIL: " + $_) -ForegroundColor Red }; exit 1 }
+Write-Host "  ok  - static: filter engine is local-only and regex-free; list updater is https-only, size-capped, receipted; shield never uses postMessage"
 Write-Host "  ok  - static: receipts carry no secrets; setup never touches the vault; Fill is origin-gated twice and never event-driven"
 Write-Host "  ok  - static: privacy/tools/viewer/vault/setup modules are local-only; tools never overwrite originals; no prefix-based localhost exemption"
+
+# Fingerprint shield maths run under node when it is installed (they are JavaScript, not C#).
+$node = Get-Command node -ErrorAction SilentlyContinue
+if($node){
+  $shieldOut = & node (Join-Path $RepoRoot "browser.tests\shield\shield.test.js") 2>&1 | Out-String
+  Write-Host $shieldOut
+  if($LASTEXITCODE -ne 0){ Write-Host "BROWSER_TESTS_FAIL: fingerprint shield tests failed" -ForegroundColor Red; exit 1 }
+  $pkOut = & node (Join-Path $RepoRoot "browser.tests\shield\passkey.test.js") 2>&1 | Out-String
+  Write-Host $pkOut
+  if($LASTEXITCODE -ne 0){ Write-Host "BROWSER_TESTS_FAIL: passkey guard/test-page tests failed" -ForegroundColor Red; exit 1 }
+} else { Write-Host "  note - node not installed: fingerprint shield JS tests were skipped (install Node.js to run them)" -ForegroundColor Yellow }
 
 $out = & dotnet run --project $proj -c Release 2>&1 | Out-String
 Write-Host $out

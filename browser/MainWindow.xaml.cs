@@ -119,6 +119,10 @@ document.addEventListener('keydown',function(e){
             public string Internal = "start";
             public bool IsInternal => Internal.Length > 0;
             public string? StyleScriptId;   // document-created script that applies the user's appearance CSS
+            public string? PasskeyScriptId; // document-created script of the passkey guard
+            public string? ShieldScriptId;  // document-created script of the fingerprint shield
+            public string TopNavUrl = "";   // top-level document currently being loaded (http/https only)
+            public readonly Dictionary<string, int> Fp = new();   // fingerprint-shield interventions on the current page
         }
 
         private readonly AppearanceSettings _appearance = new();
@@ -134,6 +138,8 @@ document.addEventListener('keydown',function(e){
         private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
             RecordNetworkEnd();
+            StopPasskeyServer();
+            CleanupExtensionsOnExit();
             CleanupViewerAll();
             foreach (var t in _tabs) { if (t.Private) { try { t.Web.Dispose(); } catch { } } }
             if (_privateDir != null) { try { if (Directory.Exists(_privateDir)) Directory.Delete(_privateDir, true); } catch { } }
@@ -180,6 +186,7 @@ document.addEventListener('keydown',function(e){
                 LoadDownloads();
                 LoadSettings();
                 LoadBlocklist();
+                InitFilters();
                 LoadNetworkConfig();
                 LoadExtensionsConfig();
 
@@ -213,6 +220,7 @@ document.addEventListener('keydown',function(e){
                 }
 
                 await OpenNewTabAsync();
+                CheckRuntimeVersion();
                 UpdateShield();
                 UpdateVpn();
                 StartNetworkObserver();
@@ -294,7 +302,7 @@ document.addEventListener('keydown',function(e){
 
         private async void MenuNewPrivate_Click(object sender, RoutedEventArgs e) => await OpenNewPrivateTabAsync();
 
-        private async Task<BrowserTab?> NewTabCoreAsync(string title, bool priv = false)
+        private async Task<BrowserTab?> NewTabCoreAsync(string title, bool priv = false, CoreWebView2Environment? envOverride = null)
         {
             var tab = new BrowserTab { Private = priv };
             var web = new WebView2 { Visibility = Visibility.Collapsed };
@@ -330,8 +338,8 @@ document.addEventListener('keydown',function(e){
             ShowActiveWebView();
             WebHost.UpdateLayout();
 
-            CoreWebView2Environment? envToUse = _env;
-            if (priv)
+            CoreWebView2Environment? envToUse = envOverride ?? _env;
+            if (priv && envOverride == null)
             {
                 try { envToUse = await EnsurePrivateEnvAsync(); }
                 catch (Exception ex)
@@ -372,7 +380,12 @@ document.addEventListener('keydown',function(e){
             web.CoreWebView2.DownloadStarting     += (o, ev) => OnDownloadStarting(ev);
             web.CoreWebView2.NewWindowRequested   += OnNewWindowRequested;
             web.CoreWebView2.FaviconChanged       += (o, ev) => OnFaviconChanged(tab);
+            web.CoreWebView2.ContentLoading       += (o, ev) => InjectCosmetic(tab);
+            HookExternalUri(web.CoreWebView2, tab);
+            ApplyTrackingPrevention(web.CoreWebView2);
             try { await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(ShortcutScript); } catch { }
+            await RegisterShieldAsync(tab);
+            await RegisterPasskeyGuardAsync(tab);
             await ApplyAppearanceAsync(tab);
 
             tab.Ready = true;
@@ -471,6 +484,9 @@ document.addEventListener('keydown',function(e){
             "setup" => "Setup snapshot",
             "passwords" => "Passwords",
             "tools" => "Tools",
+            "shield" => "Shield",
+            "passkeys" => "Passkeys",
+            "extensions" => "Extensions",
             _ => "Recognition"
         };
 
@@ -514,12 +530,14 @@ document.addEventListener('keydown',function(e){
                 // resource host) may be exempted from blocking by an explicit, receipted
                 // site-policy decision — lets one broken site opt out without disabling
                 // the global shield for every other site.
-                var pageHost = TryHost(tab.CurrentUrl);
+                var pageUrl = PageUrlFor(tab);
+                var pageHost = TryHost(pageUrl);
                 if (!string.IsNullOrEmpty(pageHost) && SitePolicyGet(pageHost, "tracker_blocking", "inherit") == "off") return;
 
-                var host = new Uri(e.Request.Uri).Host;
-                if (!IsBlockedHost(host)) return;
-                e.Response = _env.CreateWebResourceResponse(null, 403, "Blocked by Recognition", "");
+                var rtype = FilterTypeFor(tab, e);
+                var verdict = _filters.Match(e.Request.Uri, pageUrl, rtype);
+                if (!verdict.Blocked) return;
+                e.Response = tab.Web.CoreWebView2.Environment.CreateWebResourceResponse(null, 403, "Blocked by Recognition", "");   // the tab's own environment (private and test tabs use different ones)
                 tab.Blocked++; _blockedSession++;
                 if (ReferenceEquals(tab, Active)) UpdateShield();
             }
@@ -831,10 +849,10 @@ document.addEventListener('keydown',function(e){
             {
                 var exe = Environment.ProcessPath;
                 if (string.IsNullOrEmpty(exe)) { Status("cannot locate the executable to restart"); return; }
-                var pid = Environment.ProcessId;
-                var args = "-NoProfile -WindowStyle Hidden -Command \"Wait-Process -Id " + pid +
-                           " -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 700; Start-Process '" + exe.Replace("'", "''") + "'\"";
-                Process.Start(new ProcessStartInfo("pwsh.exe", args) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+                // cmd.exe is always present (the previous version needed PowerShell 7 on the machine). It waits for this
+                // process to release the profile, then starts a fresh instance that reads the new configuration.
+                var args = "/c ping -n 4 127.0.0.1 >nul & start \"\" \"" + exe + "\"";
+                Process.Start(new ProcessStartInfo("cmd.exe", args) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
                 Application.Current.Shutdown();
             }
             catch (Exception ex) { Status("restart failed: " + ex.Message); }
@@ -854,6 +872,9 @@ document.addEventListener('keydown',function(e){
                 if (r.TryGetProperty("blocking_enabled", out var b)) _blockingEnabled = b.GetBoolean();
                 if (r.TryGetProperty("strip_tracking", out var st) && (st.ValueKind == JsonValueKind.True || st.ValueKind == JsonValueKind.False)) _stripTracking = st.GetBoolean();
                 if (r.TryGetProperty("send_gpc", out var gp) && (gp.ValueKind == JsonValueKind.True || gp.ValueKind == JsonValueKind.False)) _sendGpc = gp.GetBoolean();
+                if (r.TryGetProperty("shield_level", out var sl) && sl.ValueKind == JsonValueKind.String && sl.GetString() is "off" or "standard" or "strict") _shieldLevel = sl.GetString()!;
+                if (r.TryGetProperty("passkeys_level", out var pl) && pl.ValueKind == JsonValueKind.String && pl.GetString() is "on" or "off") _passkeyLevel = pl.GetString()!;
+                if (r.TryGetProperty("tracking_level", out var tl) && tl.ValueKind == JsonValueKind.String && tl.GetString() is "off" or "basic" or "balanced" or "strict") _trackingLevel = tl.GetString()!;
                 if (r.TryGetProperty("home_url", out var hu)) { var s = hu.GetString(); if (!string.IsNullOrWhiteSpace(s)) _homeUrl = s; }
                 if (r.TryGetProperty("appearance", out var ap) && ap.ValueKind == JsonValueKind.Object) _appearance.FromJson(ap);
             }
@@ -866,7 +887,7 @@ document.addEventListener('keydown',function(e){
                 var p = SettingsPath();
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
                 File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "," +
-                                          J("strip_tracking") + ":" + (_stripTracking ? "true" : "false") + "," + J("send_gpc") + ":" + (_sendGpc ? "true" : "false") + "," +
+                                          J("strip_tracking") + ":" + (_stripTracking ? "true" : "false") + "," + J("send_gpc") + ":" + (_sendGpc ? "true" : "false") + "," + J("shield_level") + ":" + J(_shieldLevel) + "," + J("passkeys_level") + ":" + J(_passkeyLevel) + "," + J("tracking_level") + ":" + J(_trackingLevel) + "," +
                                           J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
             }
             catch { }
@@ -934,62 +955,28 @@ document.addEventListener('keydown',function(e){
         // ---- governed Chromium extensions (config/extensions.v1.json allowlist) --
         private void LoadExtensionsConfig()
         {
-            _extEnabled = false; _extLoaded = false; _extPaths.Clear();
+            _extEnabled = false; _extConfigEnabled = false; _extLoaded = false; _extPaths.Clear();
             try
             {
                 var p = Path.Combine(_repoRoot, "config", "extensions.v1.json");
-                if (!File.Exists(p)) return;
-                using var doc = JsonDocument.Parse(File.ReadAllText(p));
-                var r = doc.RootElement;
-                _extEnabled = r.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.True;
-                if (r.TryGetProperty("load", out var l) && l.ValueKind == JsonValueKind.Array)
-                    foreach (var it in l.EnumerateArray()) { var s = it.GetString(); if (!string.IsNullOrWhiteSpace(s)) _extPaths.Add(s); }
-            }
-            catch { }
-        }
-
-        // Universal extension adapter: config/extensions.v1.json entries may name an
-        // unpacked folder, a .zip, or a .crx (CRX2/CRX3) — all are normalized to an
-        // unpacked, content-addressed cache folder before anything else happens. NO
-        // format is auto-trusted: every resolved folder must pass the SAME governance
-        // load gate (recognition_extension_governance_v1.ps1 -Action verify), which
-        // recomputes the extension_id from the CURRENT bytes and refuses unless the
-        // governance ledger already records an 'allow' decision for those exact bytes.
-        // An extension is never auto-registered by the browser — registering (deciding
-        // to allow) is a separate, explicit operator action via the governance CLI.
-        private async Task LoadExtensionsAsync(BrowserTab tab)
-        {
-            if (_extLoaded || !_extEnabled || tab.Web.CoreWebView2 == null) return;
-            _extLoaded = true;
-            int ok = 0, refused = 0;
-            try
-            {
-                var profile = tab.Web.CoreWebView2.Profile;
-                foreach (var rel in _extPaths)
+                if (File.Exists(p))
                 {
-                    var source = Path.IsPathRooted(rel) ? rel : Path.Combine(_repoRoot, rel);
-                    string? dir;
-                    try { dir = PrepareExtensionSource(source); }
-                    catch (Exception ex) { Status("extension package error (" + rel + "): " + ex.Message); continue; }
-                    if (dir == null) continue;
-                    var resolvedDir = dir;   // definite non-null capture for the lambda below
-
-                    var (governed, extId, note) = await Task.Run(() => VerifyExtensionGoverned(resolvedDir));
-                    if (!governed)
-                    {
-                        refused++;
-                        _actions?.Append("extension.refused", rel);
-                        Status("extension refused by governance: " + rel + " — " + note);
-                        continue;
-                    }
-                    try { await profile.AddBrowserExtensionAsync(dir); ok++; _actions?.Append("extension.loaded", extId); }
-                    catch (Exception ex) { Status("extension load error (" + rel + "): " + ex.Message); }
+                    using var doc = JsonDocument.Parse(File.ReadAllText(p));
+                    var r = doc.RootElement;
+                    _extConfigEnabled = r.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.True;
+                    if (r.TryGetProperty("load", out var l) && l.ValueKind == JsonValueKind.Array)
+                        foreach (var it in l.EnumerateArray()) { var s = it.GetString(); if (!string.IsNullOrWhiteSpace(s)) _extPaths.Add(s); }
                 }
             }
             catch { }
-            if (ok > 0) Status($"loaded {ok} governed extension(s)" + (refused > 0 ? $", refused {refused}" : ""));
-            else if (refused > 0) Status($"all {refused} configured extension(s) refused by governance");
+            LoadExtState();
+            _extEnabled = _extConfigEnabled || _extState.Enabled;   // the Extensions page switch (runtime) or the operator's config
+            _extEnabledAtStart = _extEnabled;
         }
+
+        // Universal extension adapter: config/extensions.v1.json entries may name an unpacked folder, a .zip or a .crx, and the
+        // Extensions page installs into runtime\extensions\<id>. Both go through the same load gate in MainWindow.Extensions.cs
+        // (identity recomputed from the bytes on disk, latest governance-ledger record must say "allow"). Nothing is auto-trusted.
 
         // Normalizes an extension source into an unpacked folder. A raw directory is
         // used as-is; a .zip or .crx is extracted once into a content-addressed cache
@@ -1004,77 +991,14 @@ document.addEventListener('keydown',function(e){
             var ext = Path.GetExtension(source).ToLowerInvariant();
             if (ext != ".zip" && ext != ".crx") return null;
 
+            var fi = new FileInfo(source);
+            if (fi.Length > ExtPackage.MaxPackageBytes) throw new InvalidDataException("package is larger than " + ExtPackage.MaxPackageBytes / 1024 / 1024 + " MB");
             var bytes = File.ReadAllBytes(source);
             var sourceHash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             var cacheDir = Path.Combine(_repoRoot, "runtime", "extensions_cache", sourceHash);
-            if (Directory.Exists(cacheDir) && Directory.EnumerateFileSystemEntries(cacheDir).Any())
-                return cacheDir;
-            Directory.CreateDirectory(cacheDir);
-
-            byte[] zipBytes = ext == ".crx" ? ExtractCrxZipPayload(bytes) : bytes;
-            var tmpZip = Path.Combine(Path.GetTempPath(), "rbext-" + Guid.NewGuid().ToString("N") + ".zip");
-            try
-            {
-                File.WriteAllBytes(tmpZip, zipBytes);
-                ZipFile.ExtractToDirectory(tmpZip, cacheDir, overwriteFiles: true);
-            }
-            finally { try { File.Delete(tmpZip); } catch { } }
-            return cacheDir;
-        }
-
-        // CRX2: magic(4) version(4)=2 pubKeyLen(4) sigLen(4) pubKey sig ZIP...
-        // CRX3: magic(4) version(4)=3 headerLen(4) header(headerLen bytes) ZIP...
-        // Only the offset to the embedded ZIP is needed — the governance load gate,
-        // not the CRX's own (possibly absent) signature, is what decides trust here.
-        private static byte[] ExtractCrxZipPayload(byte[] bytes)
-        {
-            if (bytes.Length < 16 || bytes[0] != 'C' || bytes[1] != 'r' || bytes[2] != '2' || bytes[3] != '4')
-                throw new InvalidDataException("not a CRX file (bad magic)");
-            uint version = BitConverter.ToUInt32(bytes, 4);
-            int zipStart;
-            if (version == 3)
-            {
-                uint headerLen = BitConverter.ToUInt32(bytes, 8);
-                zipStart = 12 + checked((int)headerLen);
-            }
-            else if (version == 2)
-            {
-                uint pubKeyLen = BitConverter.ToUInt32(bytes, 8);
-                uint sigLen = BitConverter.ToUInt32(bytes, 12);
-                zipStart = 16 + checked((int)pubKeyLen) + checked((int)sigLen);
-            }
-            else throw new InvalidDataException("unsupported CRX version: " + version);
-            if (zipStart < 0 || zipStart >= bytes.Length) throw new InvalidDataException("CRX header length out of range");
-            var zip = new byte[bytes.Length - zipStart];
-            Array.Copy(bytes, zipStart, zip, 0, zip.Length);
-            return zip;
-        }
-
-        // The load gate: shells out to the SAME governance tool used for operator
-        // registration (recognition_extension_governance_v1.ps1), so identity and
-        // policy decisions are computed by ONE already-selftested implementation
-        // rather than reimplemented (and risking drift) in C#. Refuses closed on any
-        // error — missing pwsh, missing ledger record, tampered bytes, or a
-        // review/deny decision all refuse the same way.
-        private (bool ok, string extId, string note) VerifyExtensionGoverned(string extDir)
-        {
-            try
-            {
-                var script = Path.Combine(_repoRoot, "scripts", "recognition_extension_governance_v1.ps1");
-                if (!File.Exists(script)) return (false, "", "governance script not found");
-                var psi = new ProcessStartInfo("pwsh.exe",
-                    $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -RepoRoot \"{_repoRoot}\" -Action verify -ExtPath \"{extDir}\"")
-                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-                var p = Process.Start(psi);
-                if (p == null) return (false, "", "could not start pwsh");
-                var outp = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                p.WaitForExit();
-                var m = Regex.Match(outp, @"RECOGNITION_EXT_GOV_V1_VERIFY_OK:\s*(?<id>[0-9a-f]{64})");
-                if (m.Success) return (true, m.Groups["id"].Value, "allow");
-                var firstLine = outp.Split('\n').FirstOrDefault(l => l.Contains("FAIL") || l.Contains("REFUSED") || l.Contains("TAMPERED"))?.Trim();
-                return (false, "", string.IsNullOrEmpty(firstLine) ? "not governed" : firstLine);
-            }
-            catch (Exception ex) { return (false, "", "governance check error: " + ex.Message); }
+            if (Directory.Exists(cacheDir) && Directory.EnumerateFileSystemEntries(cacheDir).Any()) return ExtPackage.ResolveRoot(cacheDir);
+            try { return ExtPackage.Unpack(bytes, cacheDir); }   // safe unpack: path checks, size limits, CRX2/CRX3 and wrapped-folder handling
+            catch { try { Directory.Delete(cacheDir, true); } catch { } throw; }
         }
 
         // ---- governed updater UI (§54) -------------------------------------------
@@ -1330,7 +1254,9 @@ document.addEventListener('keydown',function(e){
         // build, the single-file exe for a self-contained publish.
         private static string BinaryPathForVerify()
         {
+#pragma warning disable IL3000   // Location is empty in a single-file publish; that case falls through to Environment.ProcessPath below
             try { var loc = System.Reflection.Assembly.GetEntryAssembly()?.Location; if (!string.IsNullOrEmpty(loc) && File.Exists(loc)) return loc; } catch { }
+#pragma warning restore IL3000
             try { var pp = Environment.ProcessPath; if (!string.IsNullOrEmpty(pp)) return pp; } catch { }
             return "";
         }
@@ -1389,6 +1315,9 @@ document.addEventListener('keydown',function(e){
                 "setup"     => SetupHtml(),
                 "passwords" => PasswordsHtml(),
                 "tools"     => ToolsHtml(),
+                "shield"    => ShieldHtml(),
+                "passkeys"  => PasskeysHtml(),
+                "extensions" => ExtensionsHtml(),
                 "viewer"    => ViewerReloadHtml(tab),
                 _         => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
@@ -1428,7 +1357,11 @@ document.addEventListener('keydown',function(e){
         // layered on top. The rec-internal meta tells the appearance script not to restyle our own pages.
         private string PageHead => PageHeadBase + _appearance.InternalPageCss() + "</style></head><body><div class='wrap'>";
         private const string PageHeadBase =
-            "<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><style>" +
+            "<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'>" +
+            // Internal pages keep inline script (they are built from strings), but may not make network requests, load frames/plugins,
+            // change the base URL or submit forms, so a script injected into one cannot send data anywhere except by loading an image.
+            "<meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: http: https:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'\">" +
+            "<style>" +
             "html,body{margin:0;height:100%}" +
             "body{font-family:'Segoe UI',Arial,sans-serif;background:#191c22;color:#e8e8e8}" +
             ".wrap{max-width:900px;margin:0 auto;padding:38px 28px}" +
@@ -1630,8 +1563,10 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (!string.IsNullOrWhiteSpace(_netExitCheckUrl))
                 sb.Append("<div style='margin:2px 0 18px'><a class='btn ghost' onclick=\"send('verify-exit')\">Verify exit IP</a> <span class='u'>&nbsp;opens " + Esc(_netExitCheckUrl) + " (only when you click)</span></div>");
 
+            sb.Append("<h1 style='font-size:16px'>Web engine</h1>");
+            sb.Append(EngineHtmlRow());
             sb.Append("<h1 style='font-size:16px'>Extensions</h1>");
-            sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + _extPaths.Count + " configured") : "off") + "</div></div>");
+            sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + (_extPaths.Count + _extState.Items.Count) + " configured") : "off") + " &middot; <a class='t' href='recognition:extensions'>manage extensions</a>" + "</div></div>");
             sb.Append("<div class='muted' style='margin:6px 0 18px'>Configured in <code>config\\extensions.v1.json</code>: an unpacked folder, a <code>.zip</code>, or a <code>.crx</code> (universal adapter — all three are normalized to an unpacked folder). Every extension must ALSO pass the governance load gate (<code>recognition_extension_governance_v1.ps1</code>): its current bytes are hashed and checked against a ledger decision an operator recorded explicitly via <code>-Action register</code>. Nothing loads on first sight, on a tamper, or on a review/deny decision &mdash; refusals are receipted like any other action.</div>");
 
             sb.Append("<h1 style='font-size:16px'>Site Permissions &amp; Policy (&sect;53.1/&sect;54.1)</h1>");
@@ -1866,6 +1801,9 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             else if (msg.StartsWith("setup-") && tab.Internal == "setup") HandleSetupMessage(msg);
             else if (msg.StartsWith("pw-") && tab.Internal == "passwords") HandlePwMessage(msg);
             else if (msg.StartsWith("tools-") && tab.Internal == "tools") HandleToolsMessage(msg);
+            else if ((msg.StartsWith("flt-") || msg.StartsWith("shield-")) && tab.Internal == "shield") HandleShieldMessage(msg);
+            else if (msg.StartsWith("pk-") && tab.Internal == "passkeys") HandlePasskeyMessage(msg);
+            else if (msg.StartsWith("ext-") && tab.Internal == "extensions") HandleExtMessage(msg);
             else if (msg.StartsWith("appearance-set:"))
             {
                 var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);
@@ -2069,19 +2007,6 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             WriteSecure(DownloadsPath(), sb.ToString());
         }
 
-        private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
-        {
-            e.Handled = true;
-            var uri = e.Uri;
-            _ = Dispatcher.InvokeAsync(async () =>
-            {
-                var t = await NewTabCoreAsync("New tab");
-                if (t == null) return;
-                Tabs.SelectedItem = t.Item; ShowActiveWebView();
-                NavigateTab(t, uri);
-            });
-        }
-
         // ---- navigation ---------------------------------------------------------
 
         private void OnNavStarting(BrowserTab tab, CoreWebView2NavigationStartingEventArgs e)
@@ -2112,6 +2037,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                 e.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
                 tab.Internal = "";
+                tab.TopNavUrl = e.Uri;   // the filter engine needs the page being LOADED, not the previous page
+                tab.Fp.Clear();
                 if (!e.IsRedirected) { tab.Blocked = 0; if (ReferenceEquals(tab, Active)) UpdateShield(); }
             }
             if (ReferenceEquals(tab, Active)) Status("loading…");
@@ -2149,7 +2076,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
             {
                 var name = input.Substring("recognition:".Length).ToLowerInvariant();
-                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "start" ? name : "start");
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "shield" or "passkeys" or "extensions" or "start" ? name : "start");
                 return;
             }
             tab.Internal = "";
