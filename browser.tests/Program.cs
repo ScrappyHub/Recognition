@@ -1022,6 +1022,35 @@ Console.WriteLine("=== Password vault (executed C#) ===");
         }
 }
 
+// ---- Tor tabs (TorRules) ----
+{
+    Check(TorRules.ChoosePort(true, true) == 9150 && TorRules.ChoosePort(false, true) == 9050 && TorRules.ChoosePort(true, false) == 9150 && TorRules.ChoosePort(false, false) == 0, "tor: port choice prefers Tor Browser, then the service, else none");
+    Check(TorRules.ProxyUrl(9150) == "socks5://127.0.0.1:9150" && TorRules.ProxyUrl(9050) == "socks5://127.0.0.1:9050", "tor: proxy address is local SOCKS5");
+    foreach (var trBad in new[] { 0, 1, 80, 8080, 65535, -1, 9151 })
+    {
+        var trRes = "ok"; try { TorRules.ProxyUrl(trBad); } catch (ArgumentOutOfRangeException) { trRes = "refused"; }
+        Check(trRes == "refused", "tor: port " + trBad + " is refused (only the two Tor ports are ever used)");
+    }
+    var trArgs = TorRules.EngineArgs(9150);
+    Check(trArgs.Contains("--proxy-server=\"socks5://127.0.0.1:9150\""), "tor: engine args set the Tor proxy");
+    Check(trArgs.Contains("--host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE 127.0.0.1\""), "tor: local name lookups are made to fail (no DNS leak)");
+    Check(trArgs.Contains("--force-webrtc-ip-handling-policy=disable_non_proxied_udp") && trArgs.Contains("--disable-quic"), "tor: WebRTC limited to the proxy and QUIC off");
+    Check(!trArgs.Contains("proxy-bypass") && !trArgs.Contains("--no-proxy-server") && !trArgs.Contains("direct://"), "tor: no bypass or direct option in the engine args");
+    Check(TorRules.GuardScript.Contains("RTCPeerConnection") && TorRules.GuardScript.Contains("getUserMedia") && !TorRules.GuardScript.Contains("fetch(") && !TorRules.GuardScript.Contains("XMLHttpRequest"), "tor: guard script removes WebRTC and makes no requests");
+    Check(TorRules.ParseTorApi("{\"IsTor\":true,\"IP\":\"203.0.113.7\"}", out var trT, out var trIp) && trT && trIp == "203.0.113.7", "tor: Tor Project answer (Tor) is parsed");
+    Check(TorRules.ParseTorApi("{\"IsTor\":false,\"IP\":\"2001:db8::1\"}", out var trF, out var trIp6) && !trF && trIp6 == "2001:db8::1", "tor: Tor Project answer (not Tor, IPv6) is parsed");
+    foreach (var trJ in new[] { "", "   ", "not json", "[]", "{}", "{\"IsTor\":\"yes\"}", "{\"IsTor\":1}", new string('x', 5000) })
+        Check(!TorRules.ParseTorApi(trJ, out var trB, out var trBi) && !trB && trBi == "", "tor: malformed answer refused (" + (trJ.Length > 12 ? "long" : trJ) + ")");
+    Check(TorRules.ParseTorApi("{\"IsTor\":true,\"IP\":\"<script>\"}", out var trS, out var trSi) && trS && trSi == "", "tor: a non-address in IP is dropped");
+    Check(TorRules.Verdict(false, false, false, "unknown").Contains("not running"), "tor: verdict when Tor is down");
+    Check(TorRules.Verdict(true, false, false, "unknown").Contains("could not be reached"), "tor: verdict when the check is unreachable");
+    Check(TorRules.Verdict(true, true, false, "ok").Contains("not coming out"), "tor: verdict when traffic is not Tor");
+    Check(TorRules.Verdict(true, true, true, "exposed").Contains("exposed"), "tor: verdict when WebRTC is exposed");
+    Check(TorRules.Verdict(true, true, true, "unknown").Contains("Open a Tor tab"), "tor: verdict when WebRTC was not tested");
+    Check(TorRules.Verdict(true, true, true, "ok").Contains("WebRTC is blocked"), "tor: verdict when everything is fine");
+    Check(TorRules.IsTorExit("tor-local", false) && TorRules.IsTorExit("Tor-Browser", false) && !TorRules.IsTorExit("tor-local", true) && !TorRules.IsTorExit("office", false) && !TorRules.IsTorExit(null, false), "tor: only the built-in tor-* exits are hidden when Tor is off");
+}
+
 Console.WriteLine();
 Console.WriteLine($"checks passed: {pass}  failed: {fail}");
 if (fail > 0) { Console.Error.WriteLine("BROWSER_GOVERNED_ACTIONS_TESTS_FAIL: " + fail); return 1; }

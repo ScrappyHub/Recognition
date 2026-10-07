@@ -1,9 +1,9 @@
 # Agent Instructions — Recognition
 
 <!-- ATLAS_SERVICE_MAP_BEGIN -->
-## Atlas Systems ecosystem context
+## Constellation ecosystem context
 
-This repository is the `recognition` service inside the Atlas Systems deterministic software ecosystem.
+This repository is the `recognition` service inside the Constellation deterministic software ecosystem.
 
 **Canonical role:** Identity-bound encrypted profile and governed recognition instrument.
 

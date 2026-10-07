@@ -34,7 +34,8 @@ namespace Recognition.Browser
             bool blank = uri.Length == 0 || uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase);
             _ = Dispatcher.InvokeAsync(async () =>
             {
-                var t = await NewTabCoreAsync(priv ? "Private" : "New tab", priv);
+                bool viaTor = origin?.Tor ?? false;   // a link opened from a Tor tab stays in the Tor profile
+                var t = viaTor ? (_torEnv == null ? null : await NewTabCoreAsync("Tor", true, _torEnv, true)) : await NewTabCoreAsync(priv ? "Private" : "New tab", priv);
                 if (t == null) return;
                 Tabs.SelectedItem = t.Item; ShowActiveWebView();
                 if (blank) LoadInternal(t, "start"); else NavigateTab(t, uri);
