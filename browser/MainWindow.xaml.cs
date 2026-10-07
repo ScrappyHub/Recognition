@@ -114,7 +114,10 @@ document.addEventListener('keydown',function(e){
             public int Blocked;
             public string Internal = "start";
             public bool IsInternal => Internal.Length > 0;
+            public string? StyleScriptId;   // document-created script that applies the user's appearance CSS
         }
+
+        private readonly AppearanceSettings _appearance = new();
 
         public MainWindow()
         {
@@ -126,6 +129,7 @@ document.addEventListener('keydown',function(e){
 
         private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
+            RecordNetworkEnd();
             foreach (var t in _tabs) { if (t.Private) { try { t.Web.Dispose(); } catch { } } }
             if (_privateDir != null) { try { if (Directory.Exists(_privateDir)) Directory.Delete(_privateDir, true); } catch { } }
         }
@@ -162,6 +166,8 @@ document.addEventListener('keydown',function(e){
                 _actions.Append("session.start");
                 _cookies = new GovernedActions(Path.Combine(_repoRoot, "runtime", "cookies.v1.enc"));
                 _cookies.Load();
+                _netHistory = new GovernedActions(Path.Combine(_repoRoot, "runtime", "network_history.v1.enc"));
+                _netHistory.Load();
                 _sitePolicy = new GovernedActions(Path.Combine(_repoRoot, "runtime", "site_policy.v1.enc"));
                 _sitePolicy.Load();
                 RebuildSitePolicyState();
@@ -204,6 +210,7 @@ document.addEventListener('keydown',function(e){
                 await OpenNewTabAsync();
                 UpdateShield();
                 UpdateVpn();
+                StartNetworkObserver();
                 if (_extEnabled && Active != null) await LoadExtensionsAsync(Active);
                 Status("locked startup OK — governed profile: " + userData);
             }
@@ -213,6 +220,7 @@ document.addEventListener('keydown',function(e){
         // ---- tab lifecycle ------------------------------------------------------
 
         private async void NewTab_Click(object sender, RoutedEventArgs e) => await OpenNewTabAsync();
+        private async void NewTabCmd_Executed(object sender, ExecutedRoutedEventArgs e) => await OpenNewTabAsync();   // the "+" in the tab strip
 
         private async Task OpenNewTabAsync()
         {
@@ -360,9 +368,37 @@ document.addEventListener('keydown',function(e){
             web.CoreWebView2.NewWindowRequested   += OnNewWindowRequested;
             web.CoreWebView2.FaviconChanged       += (o, ev) => OnFaviconChanged(tab);
             try { await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(ShortcutScript); } catch { }
+            await ApplyAppearanceAsync(tab);
 
             tab.Ready = true;
             return tab;
+        }
+
+        // ---- appearance (themes, dark-mode style, page colours, fonts) -----------
+        // All values are validated by AppearanceSettings (hex colours / allowlisted fonts only), so a
+        // crafted web message can never inject arbitrary CSS or script into a page.
+        private async Task ApplyAppearanceAsync(BrowserTab tab)
+        {
+            try
+            {
+                var core = tab.Web.CoreWebView2; if (core == null) return;
+                core.Profile.PreferredColorScheme = _appearance.PreferredScheme() switch
+                {
+                    2 => CoreWebView2PreferredColorScheme.Dark,
+                    1 => CoreWebView2PreferredColorScheme.Light,
+                    _ => CoreWebView2PreferredColorScheme.Auto
+                };
+                if (tab.StyleScriptId != null) { core.RemoveScriptToExecuteOnDocumentCreated(tab.StyleScriptId); tab.StyleScriptId = null; }
+                var js = _appearance.InjectScript();
+                if (!string.IsNullOrEmpty(_appearance.PageCss())) tab.StyleScriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(js);
+                if (!tab.IsInternal) await core.ExecuteScriptAsync(js);   // restyle (or clear) the page that is already open
+            }
+            catch { }
+        }
+
+        private async void ApplyAppearanceAll()
+        {
+            foreach (var t in _tabs.ToList()) if (t.Ready) await ApplyAppearanceAsync(t);
         }
 
         private void CloseTab(BrowserTab tab)
@@ -733,6 +769,9 @@ document.addEventListener('keydown',function(e){
                 cm.Items.Add(opt);
             }
             cm.Items.Add(new Separator());
+            var netPanel = new MenuItem { Header = "Network panel (connection, ping, speed, saved networks)…" };
+            netPanel.Click += (_, __) => OpenInternalInActiveTab("network");
+            cm.Items.Add(netPanel);
             var apply = new MenuItem { Header = "Apply changes now (restart)" };
             apply.Click += (_, __) => RestartToApply();
             cm.Items.Add(apply);
@@ -802,6 +841,7 @@ document.addEventListener('keydown',function(e){
                 var r = doc.RootElement;
                 if (r.TryGetProperty("blocking_enabled", out var b)) _blockingEnabled = b.GetBoolean();
                 if (r.TryGetProperty("home_url", out var hu)) { var s = hu.GetString(); if (!string.IsNullOrWhiteSpace(s)) _homeUrl = s; }
+                if (r.TryGetProperty("appearance", out var ap) && ap.ValueKind == JsonValueKind.Object) _appearance.FromJson(ap);
             }
             catch { }
         }
@@ -812,7 +852,7 @@ document.addEventListener('keydown',function(e){
                 var p = SettingsPath();
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
                 File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "," +
-                                          J("home_url") + ":" + J(_homeUrl) + "}\n", new UTF8Encoding(false));
+                                          J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
             }
             catch { }
         }
@@ -1330,7 +1370,9 @@ document.addEventListener('keydown',function(e){
                 "downloads" => DownloadsHtml(),
                 "bookmarks" => BookmarksHtml(),
                 "settings"  => SettingsHtml(),
-                _           => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
+                "network"   => NetworkHtml(),
+                "setup"     => SetupHtml(),
+                _         => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
             try { tab.Web.CoreWebView2.NavigateToString(html); } catch (Exception ex) { Status("page error: " + ex.Message); }
         }
@@ -1364,8 +1406,11 @@ document.addEventListener('keydown',function(e){
 
         // ---- page HTML ----------------------------------------------------------
 
-        private const string PageHead =
-            "<!doctype html><html><head><meta charset='utf-8'><style>" +
+        // The base stylesheet is dark; the user's appearance preferences (light theme, font) are
+        // layered on top. The rec-internal meta tells the appearance script not to restyle our own pages.
+        private string PageHead => PageHeadBase + _appearance.InternalPageCss() + "</style></head><body><div class='wrap'>";
+        private const string PageHeadBase =
+            "<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><style>" +
             "html,body{margin:0;height:100%}" +
             "body{font-family:'Segoe UI',Arial,sans-serif;background:#191c22;color:#e8e8e8}" +
             ".wrap{max-width:900px;margin:0 auto;padding:38px 28px}" +
@@ -1384,12 +1429,12 @@ document.addEventListener('keydown',function(e){
             ".kv .k{color:#8a909b;width:220px;font-size:12.5px}.kv .v{color:#e8e8e8;font-size:12.5px;word-break:break-all}" +
             ".pill{display:inline-block;border:1px solid #2c7a4b;background:#16351f;color:#7fd6a0;border-radius:999px;padding:3px 10px;font-size:11px;margin-right:6px}" +
             ".big{font-size:30px;font-weight:700;color:#7fd6a0}" +
-            "a{color:#6aa9e9}</style></head><body><div class='wrap'>";
+            "a{color:#6aa9e9}";
         private const string PageFoot = "</div></body></html>";
 
         private static string StartPageHtml()
         {
-            return @"<!doctype html><html><head><meta charset='utf-8'><title>Recognition — Start</title><style>
+            return @"<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><title>Recognition — Start</title><style>
 html,body{height:100%;margin:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#242833,#191c22 60%);
      color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center}
@@ -1427,7 +1472,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             var vpnPill = _privateVpnOn
                 ? "<span class='pill' style='border-color:#2c7a4b;background:#16351f;color:#7fd6a0'>&#127760; VPN on" + (string.IsNullOrEmpty(_privateVpnRegion) ? "" : " &middot; " + Esc(_privateVpnRegion)) + "</span>"
                 : "<span class='pill' style='border-color:#7a5a2c;background:#352a16;color:#d6b87f'>&#127760; VPN: add an endpoint in Settings</span>";
-            var head = @"<!doctype html><html><head><meta charset='utf-8'><title>Recognition — Private</title><style>
+            var head = @"<!doctype html><html><head><meta charset='utf-8'><meta name='rec-internal' content='1'><title>Recognition — Private</title><style>
 html,body{height:100%;margin:0}
 body{font-family:'Segoe UI',Arial,sans-serif;background:radial-gradient(1200px 600px at 50% -10%,#2a2540,#17151f 60%);
      color:#e8e8e8;display:flex;flex-direction:column;align-items:center;justify-content:center}
@@ -1528,6 +1573,8 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             sb.Append("<div style='margin:8px 0 20px'><span class='pill'>&#128737; Blocking</span><span class='pill'>HTTPS-first</span>" +
                       "<span class='pill'>No password autosave</span><span class='pill'>No general autofill</span>" +
                       "<span class='pill'>No telemetry</span><span class='pill'>Sleeping tabs</span><span class='pill'>Encrypted at rest</span></div>");
+
+            sb.Append(AppearanceSectionHtml());
 
             sb.Append("<h1 style='font-size:16px'>Network / VPN (&sect;5.3 / &sect;29)</h1>");
             bool netWarn = _netMode == "proxy" && !string.IsNullOrWhiteSpace(_netProxy) && _netProxyDown;
@@ -1663,6 +1710,38 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             return sb.ToString();
         }
 
+        private string AppearanceSectionHtml()
+        {
+            var a = _appearance;
+            string Opt(string[] vals, string cur, string key, Func<string, string> label)
+            {
+                var o = new StringBuilder("<select onchange=\"send('appearance-set:" + key + ":'+this.value)\" style='background:#0e1015;color:#e8e8e8;border:1px solid #333844;border-radius:6px;padding:6px 8px'>");
+                foreach (var v in vals) o.Append("<option value='" + Attr(v) + "'" + (v == cur ? " selected" : "") + ">" + Esc(label(v)) + "</option>");
+                return o.Append("</select>").ToString();
+            }
+            string Color(string key, string cur) =>
+                "<input type='color' value='" + Attr(cur) + "' onchange=\"send('appearance-set:" + key + ":'+this.value)\" style='width:44px;height:30px;border:0;background:none;cursor:pointer'>";
+            string Row(string title, string sub, string control) =>
+                "<div class='row'><div><div class='t'>" + title + "</div><div class='u'>" + sub + "</div></div><div class='ts'>" + control + "</div></div>";
+
+            var sb = new StringBuilder();
+            sb.Append("<h1 style='font-size:16px'>Appearance &amp; preferences</h1>");
+            sb.Append(Row("Colour scheme", "Theme of Recognition's own pages (Settings, History, ...) and the colour scheme sites are told you prefer.",
+                Opt(AppearanceSettings.Themes, a.Theme, "theme", v => v == "system" ? "Follow system" : char.ToUpper(v[0]) + v.Substring(1))));
+            sb.Append(Row("Dark mode for websites", "<b>Prefer dark</b> asks sites for their own dark theme. <b>Smart invert</b> darkens every page. <b>Custom colours</b> forces the colours below on every page.",
+                Opt(AppearanceSettings.DarkStyles, a.DarkStyle, "darkstyle", v => v switch { "off" => "Off", "prefer" => "Prefer dark (sites that support it)", "invert" => "Smart invert (all sites)", _ => "Custom colours (all sites)" })));
+            sb.Append(Row("Page background", "Used by Custom colours.", Color("bg", a.PageBg)));
+            sb.Append(Row("Text colour", "Used by Custom colours.", Color("text", a.PageText)));
+            sb.Append(Row("Link colour", "Used by Custom colours.", Color("link", a.LinkColor)));
+            sb.Append(Row("Font", "Applies to Recognition's own pages; turn on the option below to apply it to websites too.",
+                Opt(AppearanceSettings.Fonts, a.Font, "font", v => v == "default" ? "Default" : v)));
+            sb.Append(Row("Use this font on websites", "Overrides the fonts sites choose (code blocks keep a monospace font).",
+                "<a class='btn" + (a.OverrideSiteFonts ? "" : " ghost") + "' onclick=\"send('appearance-set:overridefonts:" + (a.OverrideSiteFonts ? "off" : "on") + "')\">" + (a.OverrideSiteFonts ? "ON" : "OFF") + "</a>"));
+            sb.Append("<div style='margin:6px 0 18px'><a class='btn ghost' onclick=\"send('appearance-reset')\">Reset appearance to defaults</a> " +
+                      "<span class='u'>&nbsp;Browser window chrome (toolbar, tabs) keeps its dark style.</span></div>");
+            return sb.ToString();
+        }
+
         private static string SendScript() =>
             "<script>function send(c){window.chrome.webview.postMessage(c);}" +
             "document.addEventListener('click',function(e){var a=e.target.closest('a.t');" +
@@ -1733,6 +1812,27 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
                     Status("tracker blocking for " + parts[0] + ": " + (parts[1] == "off" ? "exempted" : "inherits global setting"));
                     if (tab.Internal == "settings") LoadInternal(tab, "settings");
                 }
+            }
+            else if (msg.StartsWith("net-")) HandleNetMessage(msg);
+            else if (msg.StartsWith("setup-") && tab.Internal == "setup") HandleSetupMessage(msg);
+            else if (msg.StartsWith("appearance-set:"))
+            {
+                var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);
+                if (parts.Length == 2 && _appearance.Set(parts[0], parts[1]))
+                {
+                    SaveSettings(); ApplyAppearanceAll();
+                    _actions?.Append("appearance." + parts[0], parts[1]);
+                    Status("appearance updated: " + parts[0]);
+                    if (tab.Internal == "settings") LoadInternal(tab, "settings");
+                }
+                else Status("appearance change rejected (invalid value)");
+            }
+            else if (msg == "appearance-reset")
+            {
+                _appearance.Reset(); SaveSettings(); ApplyAppearanceAll();
+                _actions?.Append("appearance.reset");
+                Status("appearance reset to defaults");
+                if (tab.Internal == "settings") LoadInternal(tab, "settings");
             }
             else if (msg.StartsWith("cert-trust:"))
             {
@@ -1968,7 +2068,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
             {
                 var name = input.Substring("recognition:".Length).ToLowerInvariant();
-                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "start" ? name : "start");
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "start" ? name : "start");
                 return;
             }
             tab.Internal = "";
@@ -2309,123 +2409,6 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             {
                 try { if (File.Exists(_path)) File.Delete(_path); } catch { }
                 try { if (File.Exists(_legacy)) File.Delete(_legacy); } catch { }
-                Items.Clear(); _lines.Clear(); _head = new string('0', 64);
-            }
-
-            private static string HashHex(string s)
-            {
-                var h = SHA256.HashData(Enc.GetBytes(s));
-                var sb = new StringBuilder(); foreach (var b in h) sb.Append(b.ToString("x2")); return sb.ToString();
-            }
-            private static string JJ(string s) => "\"" + (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
-            private static string GetS(JsonElement r, string k) => r.TryGetProperty(k, out var v) ? (v.GetString() ?? "") : "";
-        }
-
-        // ---- governed action receipts (§13/§15): prove-it-in-every-action -------
-        // Every meaningful browser action appends one append-only, hash-chained,
-        // DPAPI-encrypted receipt. Sensitive detail (URLs, paths) is stored ONLY as a
-        // SHA-256, never cleartext — same privacy stance as the history chain. The chain
-        // links seq→prev_hash→hash so nothing can be modified, reordered, missing, or
-        // forged without Verify() failing. This is the browser-side witness that each
-        // action really happened, in order. Format matches the PS selftest / prove-all.
-        private sealed class GovernedActions
-        {
-            public sealed class Rec { public int Seq; public string Ts = ""; public string Action = ""; public string DetailSha = ""; public string Hash = ""; }
-            public readonly List<Rec> Items = new();
-            private readonly List<string> _lines = new();
-            private readonly string _path;
-            private string _head = new string('0', 64);
-            private static readonly UTF8Encoding Enc = new(false);
-            public string Head => _head;
-            public int Count => Items.Count;
-
-            public GovernedActions(string path) { _path = path; }
-
-            public void Load()
-            {
-                Items.Clear(); _lines.Clear(); _head = new string('0', 64);
-                var text = ReadSecure(_path);
-                foreach (var raw in text.Split('\n'))
-                {
-                    var line = raw.Trim();
-                    if (line.Length == 0) continue;
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(line);
-                        var r = doc.RootElement;
-                        Items.Add(new Rec
-                        {
-                            Seq = r.TryGetProperty("seq", out var sq) ? sq.GetInt32() : Items.Count + 1,
-                            Ts = GetS(r, "ts_utc"), Action = GetS(r, "action"), DetailSha = GetS(r, "detail_sha256"),
-                            Hash = GetS(r, "hash")
-                        });
-                        _lines.Add(line);
-                        if (r.TryGetProperty("hash", out var hv)) _head = hv.GetString() ?? _head;
-                    }
-                    catch { }
-                }
-            }
-
-            // detail is hashed here; callers pass cleartext and it never touches disk.
-            public void Append(string action, string detail = "")
-            {
-                if (string.IsNullOrEmpty(action)) return;
-                var seq = Items.Count + 1;
-                var ts = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
-                var detailSha = string.IsNullOrEmpty(detail) ? "" : HashHex(detail);
-                var body = "{" + JJ("seq") + ":" + seq + "," + JJ("ts_utc") + ":" + JJ(ts) + "," +
-                           JJ("action") + ":" + JJ(action) + "," + JJ("detail_sha256") + ":" + JJ(detailSha) + "," +
-                           JJ("prev_hash") + ":" + JJ(_head) + "}";
-                var hash = HashHex(body);
-                var line = body.Substring(0, body.Length - 1) + "," + JJ("hash") + ":" + JJ(hash) + "}";
-                _head = hash;
-                Items.Add(new Rec { Seq = seq, Ts = ts, Action = action, DetailSha = detailSha, Hash = hash });
-                _lines.Add(line);
-                Save();
-            }
-
-            // Recompute the chain: every record's body-hash must match, prev_hash must
-            // link to the prior record's hash, and seq must be contiguous. Returns false
-            // on any tamper / reorder / missing / forged record. The body is recovered by
-            // text surgery on the raw line (not by re-serializing parsed JSON fields) so the
-            // recomputed hash input is byte-identical to what Append() actually hashed.
-            public bool Verify(out int verified)
-            {
-                verified = 0;
-                var prev = new string('0', 64);
-                int expectSeq = 1;
-                var marker = "," + JJ("hash") + ":";
-                foreach (var line in _lines)
-                {
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(line);
-                        var r = doc.RootElement;
-                        int seq = r.GetProperty("seq").GetInt32();
-                        string ph = GetS(r, "prev_hash"), h = GetS(r, "hash");
-                        if (seq != expectSeq) return false;
-                        if (ph != prev) return false;
-                        int idx = line.LastIndexOf(marker, StringComparison.Ordinal);
-                        if (idx < 0) return false;
-                        var body = line.Substring(0, idx) + "}";
-                        if (HashHex(body) != h) return false;
-                        prev = h; expectSeq++; verified++;
-                    }
-                    catch { return false; }
-                }
-                return true;
-            }
-
-            private void Save()
-            {
-                var sb = new StringBuilder();
-                foreach (var l in _lines) { sb.Append(l); sb.Append('\n'); }
-                WriteSecure(_path, sb.ToString());
-            }
-
-            public void Clear()
-            {
-                try { if (File.Exists(_path)) File.Delete(_path); } catch { }
                 Items.Clear(); _lines.Clear(); _head = new string('0', 64);
             }
 

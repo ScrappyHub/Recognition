@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Executes the browser's REAL governance code (GovernedActions), compiled from the very same
+       source file the browser uses, against golden vectors and negative vectors. No WPF or WebView2
+       dependency. Run with: dotnet run (project browser.tests, configuration Release).
+       Token on success: SELFTEST_RECOGNITION_BROWSER_GOVERNED_ACTIONS_V1_OK -->
+
+  <!-- NOTE: an XML comment may not contain two consecutive hyphens. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Recognition.Browser.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\browser\GovernedActions.cs" Link="GovernedActions.cs" />
+    <Compile Include="..\browser\Appearance.cs" Link="Appearance.cs" />
+    <Compile Include="..\browser\NetworkInfo.cs" Link="NetworkInfo.cs" />
+    <Compile Include="..\browser\SetupSnapshot.cs" Link="SetupSnapshot.cs" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

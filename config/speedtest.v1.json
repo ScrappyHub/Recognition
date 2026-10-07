@@ -1,0 +1,6 @@
+{
+  "schema": "recognition.speedtest.v1",
+  "download_url": "https://speed.cloudflare.com/__down?bytes=12000000",
+  "upload_url": "https://speed.cloudflare.com/__up",
+  "notes": "Used ONLY when you click 'Run speed test' in the Network panel. The test contacts this host directly (not through the VPN/proxy), which shows your IP address to that server. Both URLs must be https. Point these at your own server if you prefer."
+}
