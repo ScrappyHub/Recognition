@@ -60,18 +60,6 @@ $sb = Get-Content -LiteralPath (Join-Path $bdir "SoteriaBridge.cs") -Raw
 $sw = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Soteria.cs") -Raw
 if($sb -match 'HttpClient|WebClient|WebRequest|TcpClient|UdpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|System\.Text\.RegularExpressions|File\.Write|File\.Delete|Directory\.Delete'){ $bad += "SoteriaBridge.cs must stay pure: no network, processes, writes, deletes or regex" }
 if($sw -match 'HttpClient|WebClient|WebRequest|Process\.Start|ProcessStartInfo|File\.Write|File\.Delete|Directory\.Delete|File\.Copy|File\.Move|PasswordVault|Decrypt|Unprotect'){ $bad += "MainWindow.Soteria.cs may only read the two contract files: no processes, writes, network or secret handling" }
-# Tor tabs: own profile, fail closed, no direct fallback, no permissions, links stay in Tor.
-$tr = Get-Content -LiteralPath (Join-Path $bdir "TorRules.cs") -Raw
-$tw = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Tor.cs") -Raw
-$mwx = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.xaml.cs") -Raw
-$hdx = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Hardening.cs") -Raw
-if($tr -match 'HttpClient|WebClient|WebRequest|TcpClient|Process\.Start|File\.Write|File\.Delete|Directory\.Delete'){ $bad += "TorRules.cs must stay pure: no network, processes, writes or deletes" }
-if($tr -match 'proxy-bypass|no-proxy-server|direct://'){ $bad += "TorRules.cs must never offer a proxy bypass" }
-if($tw -notmatch 'TorRules\.EngineArgs'){ $bad += "Tor tabs must be created from TorRules.EngineArgs" }
-if($tw -notmatch 'FindTorPortAsync\(\);\s*\r?\n\s*if \(port == 0\) \{ OpenInternalInActiveTab\("tor"\); return; \}'){ $bad += "Tor tab menu must refuse to open a tab when Tor is not running" }
-if($mwx -notmatch 'tab\.Tor \? "deny"'){ $bad += "Tor tabs must never grant a site permission" }
-if($hdx -notmatch 'viaTor'){ $bad += "links opened from a Tor tab must stay in the Tor profile" }
-if($mwx -notmatch 'tor_enabled'){ $bad += "Tor on/off setting must be persisted" }
 if($sb -notmatch 'secret_release_to_external_runtime' -or $sb -notmatch 'hard_runtime_dependency' -or $sb -notmatch 'must_not_fail_if_absent'){ $bad += "the SoteriaVault link must refuse a contract that allows secret release or hard dependencies" }
 if($sw -notmatch 'soteria\.check'){ $bad += "SoteriaVault checks must be receipted (soteria.check)" }
 if($sw -notmatch 'IsSafeRoot'){ $bad += "the SoteriaVault folder must pass SoteriaBridge.IsSafeRoot before use" }

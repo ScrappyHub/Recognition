@@ -1,1 +1,1 @@
-{"schema":"recognition.network.v1","mode":"off","proxy":"","exit_region":"","exit_check_url":"https://api.ipify.org?format=json","auto_optimize":false,"endpoints":[{"name":"tor-local","region":"Tor (service on this computer)","proxy":"socks5://127.0.0.1:9050"},{"name":"tor-browser","region":"Tor (Tor Browser running)","proxy":"socks5://127.0.0.1:9150"}]}
+{"schema":"recognition.network.v1","mode":"off","proxy":"","exit_region":"","exit_check_url":"https://api.ipify.org?format=json","auto_optimize":false,"endpoints":[]}

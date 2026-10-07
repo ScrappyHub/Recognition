@@ -81,14 +81,3 @@ Expected honest result: lower than Brave on list breadth and cosmetic coverage u
 | H5 | Click a web link in another program | Recognition opens it in a new tab; no second window |
 | H6 | Launch Recognition again from the Start menu while it is running | The running window comes forward; no second copy starts |
 | H7 | Double-click a local .html file after choosing Recognition for .html | It opens in a tab |
-
-## I. Tor tabs (v1.3.3)
-
-With Tor Browser open:
-1. Menu, Private Tor tab: a tab titled "Tor" opens. Open https://check.torproject.org/ in it: it says the browser uses Tor. A normal tab on the same page says it does not.
-2. In the Tor tab open `recognition:tor`, press Run leak check: Tor port reachable, exit network Tor, WebRTC blocked.
-3. Open http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion in the Tor tab: it loads.
-4. Close Tor Browser, open a new Tor tab: Recognition shows the Tor page saying Tor is not running (no tab, no direct page).
-5. A link that opens a new window from a Tor tab opens in a Tor tab.
-6. Settings, Tor tabs, Turn off: the menu item disappears, Tor tabs close, the VPN page has no Tor text. Turn on brings it back.
-

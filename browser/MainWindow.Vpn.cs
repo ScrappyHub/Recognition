@@ -8,7 +8,7 @@ using System.Windows;
 namespace Recognition.Browser
 {
     // The VPN / proxy page. Recognition ships no VPN servers: an "exit" here is a proxy you bring (from a VPN provider, your own server,
-    // or Tor). The web engine takes its proxy when it starts, so a change applies after a restart, and the page says so. Every action
+    // or similar). The web engine takes its proxy when it starts, so a change applies after a restart, and the page says so. Every action
     // reports its result on the page. The checks on what you type are in ProxyRules.cs (executed by tests).
     public partial class MainWindow
     {
@@ -20,10 +20,7 @@ namespace Recognition.Browser
 
         private async Task SendVpnSnapshotAsync(string? note = null, bool ok = true)
         {
-            // Tor is probed on this computer only (two local ports, a one-second limit each)
-            double t9050 = -1, t9150 = -1;
-            if (_torEnabled) { try { var a = ProbeAsync("127.0.0.1", 9050); var b = ProbeAsync("127.0.0.1", 9150); t9050 = await a; t9150 = await b; } catch { } }
-            var exits = _netEndpoints.Where(e => _torEnabled || !TorRules.IsTorExit(e.Name, e.User)).Select(e => new
+            var exits = _netEndpoints.Select(e => new
             {
                 name = e.Name, label = string.IsNullOrEmpty(e.Region) ? e.Name : e.Region, address = ProxyRules.Describe(e.Proxy),
                 user = e.User, local = ProxyRules.IsLocal(e.Proxy), active = _netMode == "proxy" && _netProxy == e.Proxy
@@ -31,7 +28,7 @@ namespace Recognition.Browser
             PostToVpnPage(new
             {
                 type = "snapshot", mode = _netMode, proxy = ProxyRules.Describe(_netProxy), region = _netExitRegion ?? "",
-                down = _netProxyDown, activeNow = NetActive(), exits, tor = t9050 >= 0 || t9150 >= 0, torOn = _torEnabled,
+                down = _netProxyDown, activeNow = NetActive(), exits,
                 note = note ?? "", ok
             });
         }
@@ -110,10 +107,9 @@ namespace Recognition.Browser
         {
             var sb = new StringBuilder(PageHead);
             sb.Append(@"<title>VPN / proxy</title><h1>VPN / proxy</h1>
-<div class='muted'>Recognition does <b>not</b> provide VPN servers, so this page has no built-in locations. It sends your browsing through an <b>exit</b> that you bring: a proxy from your VPN provider or your own server" + (_torEnabled ? ", or Tor" : "") + @". You have these ways to get one:
+<div class='muted'>Recognition does <b>not</b> provide VPN servers, so this page has no built-in locations. It sends your browsing through an <b>exit</b> that you bring: a proxy from your VPN provider or your own server. You have two ways to get one:
 <br>1. <b>A proxy from a VPN provider</b>, or from your own server (SOCKS5 or HTTP). Add its address below.
-" + (_torEnabled ? @"<br>2. <b>Tor</b>: install Tor (or run Tor Browser) and it appears below as an exit on this computer. For private browsing through Tor next to your normal tabs, use Menu &rarr; Private Tor tab instead." : "") + @"
-<br>" + (_torEnabled ? "3" : "2") + @". <b>A VPN app for the whole computer</b> (WireGuard, OpenVPN, your provider's app). Recognition follows it automatically, so there is nothing to set here.
+<br>2. <b>A VPN app for the whole computer</b> (WireGuard, OpenVPN, your provider's app). Recognition follows it automatically, so there is nothing to set here.
 <br>The web engine takes its proxy when it starts, so a change needs a restart. A SOCKS5 exit also looks up website names through the exit. Only the traffic of this browser goes through an exit.</div>
 <div id='msg' class='u' style='min-height:20px;margin:10px 0;font-size:13px'></div>
 <div id='info' class='row' style='display:block'></div>
@@ -137,7 +133,6 @@ function render(m){
   var i=$('info');i.textContent='';
   var s=m.mode==='proxy'&&m.proxy?(m.down?'Chosen exit: '+m.region+' ('+m.proxy+'), but it could not be reached when Recognition started, so this session is DIRECT.':(m.activeNow?'In use now: '+m.region+' ('+m.proxy+')':'Chosen exit: '+m.region+' ('+m.proxy+'). Restart to start using it.')):'No exit chosen: Recognition connects directly.';
   i.appendChild(el('div',s,'t'));
-  if(m.torOn)i.appendChild(el('div','Tor on this computer: '+(m.tor?'running':'not found (install Tor or start Tor Browser to use it)'),'u'));
   var x=$('exits');x.textContent='';
   (m.exits||[]).forEach(function(e){var r=el('div',null,'row');var l=el('div');
     l.appendChild(el('div',e.label+(e.active?'   (chosen)':''),'t'));l.appendChild(el('div',e.address+(e.local?'  ·  on this computer':''),'u'));r.appendChild(l);

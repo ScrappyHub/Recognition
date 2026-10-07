@@ -115,7 +115,6 @@ document.addEventListener('keydown',function(e){
             public string CurrentTitle = "New tab";
             public bool Ready;
             public bool Private;
-            public bool Tor;                // runs in the separate Tor profile
             public int Blocked;
             public string Internal = "start";
             public bool IsInternal => Internal.Length > 0;
@@ -141,7 +140,6 @@ document.addEventListener('keydown',function(e){
             RecordNetworkEnd();
             StopPasskeyServer();
             CleanupExtensionsOnExit();
-            CleanupTorOnExit();
             CleanupViewerAll();
             foreach (var t in _tabs) { if (t.Private) { try { t.Web.Dispose(); } catch { } } }
             if (_privateDir != null) { try { if (Directory.Exists(_privateDir)) Directory.Delete(_privateDir, true); } catch { } }
@@ -187,7 +185,6 @@ document.addEventListener('keydown',function(e){
                 LoadBookmarks();
                 LoadDownloads();
                 LoadSettings();
-                ApplyTorVisibility();
                 LoadBlocklist();
                 InitFilters();
                 LoadNetworkConfig();
@@ -266,7 +263,7 @@ document.addEventListener('keydown',function(e){
                 ? ("private tab — VPN on" + (string.IsNullOrEmpty(_privateVpnRegion) ? "" : " (" + _privateVpnRegion + ")") + ", nothing persisted")
                 : (_netEndpoints.Count == 0 || (string.IsNullOrWhiteSpace(_netProxy) && _netEndpoints.Count == 0)
                     ? "private tab — nothing persisted (add a VPN endpoint in Settings to tunnel incognito)"
-                    : "private tab — nothing persisted; VPN could not engage (exit unreachable — bring your exit online, e.g. run Tor for tor-local)"));
+                    : "private tab — nothing persisted; VPN could not engage (exit unreachable — bring your exit online)"));
         }
 
         private async Task<CoreWebView2Environment> EnsurePrivateEnvAsync()
@@ -287,11 +284,10 @@ document.addEventListener('keydown',function(e){
         {
             var o = new CoreWebView2EnvironmentOptions();
             string proxy = _netProxy, region = _netExitRegion;
-            var firstExit = _netEndpoints.FirstOrDefault(x => _torEnabled || !TorRules.IsTorExit(x.Name, x.User));
-            if (string.IsNullOrWhiteSpace(proxy) && firstExit != null)
+            if (string.IsNullOrWhiteSpace(proxy) && _netEndpoints.Count > 0)
             {
-                proxy = firstExit.Proxy;
-                region = string.IsNullOrEmpty(firstExit.Region) ? firstExit.Name : firstExit.Region;
+                proxy = _netEndpoints[0].Proxy;
+                region = string.IsNullOrEmpty(_netEndpoints[0].Region) ? _netEndpoints[0].Name : _netEndpoints[0].Region;
             }
             if (!string.IsNullOrWhiteSpace(proxy))
             {
@@ -310,9 +306,9 @@ document.addEventListener('keydown',function(e){
 
         private async void MenuNewPrivate_Click(object sender, RoutedEventArgs e) => await OpenNewPrivateTabAsync();
 
-        private async Task<BrowserTab?> NewTabCoreAsync(string title, bool priv = false, CoreWebView2Environment? envOverride = null, bool tor = false)
+        private async Task<BrowserTab?> NewTabCoreAsync(string title, bool priv = false, CoreWebView2Environment? envOverride = null)
         {
-            var tab = new BrowserTab { Private = priv, Tor = tor };
+            var tab = new BrowserTab { Private = priv };
             var web = new WebView2 { Visibility = Visibility.Collapsed };
             tab.Web = web;
             WebHost.Children.Add(web);
@@ -392,7 +388,6 @@ document.addEventListener('keydown',function(e){
             HookExternalUri(web.CoreWebView2, tab);
             ApplyTrackingPrevention(web.CoreWebView2);
             try { await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(ShortcutScript); } catch { }
-            if (tab.Tor) { try { await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(TorRules.GuardScript); } catch { } }
             await RegisterShieldAsync(tab);
             await RegisterPasskeyGuardAsync(tab);
             await ApplyAppearanceAsync(tab);
@@ -491,7 +486,7 @@ document.addEventListener('keydown',function(e){
         {
             if (!tab.IsInternal && !string.IsNullOrWhiteSpace(title)) tab.CurrentTitle = title;
             var label = tab.IsInternal && tab.Internal != "viewer" ? InternalTitle(tab.Internal) : tab.CurrentTitle;
-            tab.Header.Text = (tab.Tor ? "Tor · " : (tab.Private ? "🕶 " : "")) + label;
+            tab.Header.Text = (tab.Private ? "🕶 " : "") + label;
         }
 
         private static string InternalTitle(string name) => name switch
@@ -509,7 +504,6 @@ document.addEventListener('keydown',function(e){
             "passkeys" => "Passkeys",
             "extensions" => "Extensions",
             "soteria" => "SoteriaVault",
-            "tor" => "Tor",
             "export" => "Session export",
             "vpn" => "VPN / proxy",
             _ => "Recognition"
@@ -583,7 +577,7 @@ document.addEventListener('keydown',function(e){
             {
                 var kind = e.PermissionKind.ToString();
                 var origin = TryHost(e.Uri);
-                var decision = tab.Tor ? "deny" : SitePolicyGet(origin, "perm." + kind, "deny");   // Tor tabs never grant a permission
+                var decision = SitePolicyGet(origin, "perm." + kind, "deny");
                 if (decision == "allow")
                 {
                     e.State = CoreWebView2PermissionState.Allow;
@@ -821,7 +815,7 @@ document.addEventListener('keydown',function(e){
             if (ms < 0)
             {
                 Status("VPN exit '" + label + "' is unreachable (" + ep.Proxy + ") — not applied. "
-                     + "Bring its exit online (your proxy/WireGuard, or Tor for tor-local) or fix the host in Network settings.");
+                     + "Bring its exit online (your proxy or WireGuard) or fix the host in Network settings.");
                 return;
             }
             _netMode = "proxy"; _netProxy = ep.Proxy; _netExitRegion = label; _netProxyDown = false;
@@ -867,7 +861,6 @@ document.addEventListener('keydown',function(e){
                 if (r.TryGetProperty("passkeys_level", out var pl) && pl.ValueKind == JsonValueKind.String && pl.GetString() is "on" or "off") _passkeyLevel = pl.GetString()!;
                 if (r.TryGetProperty("tracking_level", out var tl) && tl.ValueKind == JsonValueKind.String && tl.GetString() is "off" or "basic" or "balanced" or "strict") _trackingLevel = tl.GetString()!;
                 if (r.TryGetProperty("soteria_root", out var sr) && sr.ValueKind == JsonValueKind.String && SoteriaBridge.IsSafeRoot(sr.GetString())) _soteriaRoot = sr.GetString()!.Trim();
-                if (r.TryGetProperty("tor_enabled", out var te) && (te.ValueKind == JsonValueKind.True || te.ValueKind == JsonValueKind.False)) _torEnabled = te.GetBoolean();
                 if (r.TryGetProperty("home_url", out var hu)) { var s = hu.GetString(); if (!string.IsNullOrWhiteSpace(s)) _homeUrl = s; }
                 if (r.TryGetProperty("appearance", out var ap) && ap.ValueKind == JsonValueKind.Object) _appearance.FromJson(ap);
             }
@@ -881,13 +874,13 @@ document.addEventListener('keydown',function(e){
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
                 File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "," +
                                           J("strip_tracking") + ":" + (_stripTracking ? "true" : "false") + "," + J("send_gpc") + ":" + (_sendGpc ? "true" : "false") + "," + J("shield_level") + ":" + J(_shieldLevel) + "," + J("passkeys_level") + ":" + J(_passkeyLevel) + "," + J("tracking_level") + ":" + J(_trackingLevel) + "," +
-                                          J("soteria_root") + ":" + J(_soteriaRoot) + "," + J("tor_enabled") + ":" + (_torEnabled ? "true" : "false") + "," + J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
+                                          J("soteria_root") + ":" + J(_soteriaRoot) + "," + J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
             }
             catch { }
         }
 
         // ---- governed network / VPN -------------------------------------------------------------------------------
-        // config\network.v1.json ships with the program (no exits except Tor on this computer, mode off). What you choose and the exits
+        // config\network.v1.json ships with the program (no exits, mode off). What you choose and the exits
         // you add are kept in runtime\network_user.v1.json, which survives updates and reinstalls.
         private string NetUserPath() => Path.Combine(_repoRoot, "runtime", "network_user.v1.json");
         private void LoadNetworkConfig()
@@ -1340,9 +1333,8 @@ document.addEventListener('keydown',function(e){
                 "soteria"   => SoteriaHtml(),
                 "export"    => ExportHtml(),
                 "vpn"       => VpnHtml(),
-                "tor"       => TorHtml(),
                 "viewer"    => ViewerReloadHtml(tab),
-                _         => (tab.Tor ? TorStartHtml() : (tab.Private ? PrivateStartPageHtml() : StartPageHtml()))
+                _         => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
             try { tab.Web.CoreWebView2.NavigateToString(html); } catch (Exception ex) { Status("page error: " + ex.Message); }
         }
@@ -1589,7 +1581,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (netWarn)
                 sb.Append("<div class='row' style='border:1px solid #E0B44C;background:#2a2410'><div><div class='t' style='color:#E0B44C'>&#9888; Configured exit unreachable &mdash; running DIRECT this session</div>" +
                           "<div class='u'>The exit <code>" + Esc(_netProxy) + "</code> (" + Esc(_netExitRegion ?? "") + ") did not answer. Browsing still works, unproxied. " +
-                          "Bring that exit online (your proxy / WireGuard, or Tor for tor-local), pick another exit below, or set it Off.</div></div></div>");
+                          "Bring that exit online (your proxy or WireGuard), pick another exit below, or set it Off.</div></div></div>");
             sb.Append("<div class='row'><div><div class='t'>Tunnel</div><div class='u'>" +
                       (NetActive() ? ("ON &mdash; " + Esc(_netMode) + (string.IsNullOrEmpty(_netExitRegion) ? "" : " &middot; " + Esc(_netExitRegion)))
                                    : (netWarn ? "DIRECT (configured exit unreachable)" : "OFF (direct connection)")) +
@@ -1605,16 +1597,15 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (_netEndpoints.Count > 0)
                 sb.Append("<div style='margin:10px 0 6px'><a class='btn' onclick=\"send('vpn-optimize')\">Auto-optimize (best placement)</a></div>");
             else
-                sb.Append("<div class='muted'>Add and manage exits on the <a class='t' href='recognition:vpn'>VPN / proxy page</a>. Recognition runs no exit servers &mdash; bring your own (a provider proxy, your own server, or Tor).</div>");
+                sb.Append("<div class='muted'>Add and manage exits on the <a class='t' href='recognition:vpn'>VPN / proxy page</a>. Recognition runs no exit servers &mdash; bring your own (a provider proxy or your own server).</div>");
             sb.Append("<div style='margin:8px 0 6px'><a class='btn' onclick=\"send('vpn-apply')\">Apply changes now (restart)</a></div>");
-            sb.Append("<div class='muted' style='margin:6px 0 6px'>Routing changes apply on next launch (the engine proxy is set at startup) &mdash; use <b>Apply changes now</b> to restart immediately. Egress: HTTPS-first, trackers/ads blocked, no telemetry &mdash; all requests user-initiated. Recognition runs no exit servers; every exit above is one you bring (self-hosted, a provider proxy, WireGuard, or Tor).</div>");
+            sb.Append("<div class='muted' style='margin:6px 0 6px'>Routing changes apply on next launch (the engine proxy is set at startup) &mdash; use <b>Apply changes now</b> to restart immediately. Egress: HTTPS-first, trackers/ads blocked, no telemetry &mdash; all requests user-initiated. Recognition runs no exit servers; every exit above is one you bring (self-hosted, a provider proxy, or WireGuard).</div>");
             if (!string.IsNullOrWhiteSpace(_netExitCheckUrl))
                 sb.Append("<div style='margin:2px 0 18px'><a class='btn ghost' onclick=\"send('verify-exit')\">Verify exit IP</a> <span class='u'>&nbsp;opens " + Esc(_netExitCheckUrl) + " (only when you click)</span></div>");
 
             sb.Append("<h1 style='font-size:16px'>Web engine</h1>");
             sb.Append(EngineHtmlRow());
             sb.Append(DefaultBrowserHtmlRow());
-            sb.Append(TorSettingsRow());
             sb.Append("<div class='row'><div><div class='t'>Tools</div><div class='u'>PDF page tools (merge, split, rotate, reorder), image tools, full-page screenshots, save as PDF, view source. Also under Menu &rarr; Tools. Translate and widgets are not built.</div></div><div class='ts'><a class='btn' href='recognition:tools'>Open Tools</a> <a class='btn ghost' href='recognition:vpn'>VPN / proxy</a> <a class='btn ghost' href='recognition:export'>Last export</a></div></div>");
             sb.Append("<h1 style='font-size:16px'>Extensions</h1>");
             sb.Append("<div class='kv'><div class='k'>Chromium extensions</div><div class='v'>" + (_extEnabled ? ("enabled &mdash; " + (_extPaths.Count + _extState.Items.Count) + " configured") : "off") + " &middot; <a class='t' href='recognition:extensions'>manage extensions</a>" + "</div></div>");
@@ -1859,7 +1850,6 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             else if (msg.StartsWith("sv-") && tab.Internal == "soteria") HandleSoteriaMessage(msg);
             else if (msg.StartsWith("exp-") && tab.Internal == "export") HandleExportMessage(msg);
             else if (msg.StartsWith("exit-") && tab.Internal == "vpn") HandleVpnMessage(msg);
-            else if (msg.StartsWith("tor-") && (tab.Internal == "tor" || tab.Internal == "settings")) HandleTorMessage(msg);
             else if (msg.StartsWith("appearance-set:"))
             {
                 var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);
@@ -2139,7 +2129,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
             {
                 var name = input.Substring("recognition:".Length).ToLowerInvariant();
-                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "shield" or "passkeys" or "extensions" or "soteria" or "vpn" or "export" or "tor" or "start" ? name : "start");
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "shield" or "passkeys" or "extensions" or "soteria" or "vpn" or "export" or "start" ? name : "start");
                 return;
             }
             tab.Internal = "";

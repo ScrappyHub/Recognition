@@ -8,7 +8,7 @@
 [Setup]
 AppId={{A9E2F3C1-0B7A-4D6E-9C21-7E4B1F0A55A9}
 AppName=Recognition
-AppVersion=1.3.3
+AppVersion=1.3.2
 AppPublisher=ScrappyHub
 DefaultDirName={localappdata}\Recognition
 DisableProgramGroupPage=yes

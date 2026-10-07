@@ -128,16 +128,7 @@ The handoff has no separate DoD; §31's ✓ pattern **is** the definition, gover
 
 | Area | State |
 |---|---|
-| VPN / proxy page (`recognition:vpn`) | Built: add/test/use/remove exits, Tor detection, restart-to-apply (`--restart` waits for the old copy). No VPN servers are shipped; the page says so. Rules in ProxyRules.cs are executed by tests; the page itself needs a manual check (smoke sheet). |
+| VPN / proxy page (`recognition:vpn`) | Built: add/test/use/remove exits, restart-to-apply (`--restart` waits for the old copy). No VPN servers are shipped; the page says so. Rules in ProxyRules.cs are executed by tests; the page itself needs a manual check (smoke sheet). |
 | Export result page (`recognition:export`) | Built: packet code, QR of the packet fingerprint (QrCode.cs, golden-hash tests, cross-checked with OpenCV), copy, open folder. Needs a manual check. |
 | Tools discoverability | Menu Tools and VPN items, Settings row. Translate and widgets are not built. |
-
-## v1.3.3: Tor tabs (unverified until the gate is run on Windows)
-
-| Area | State |
-|---|---|
-| Tor tab (Menu: Private Tor tab) | Built. Runs in its own engine profile created with a local SOCKS5 Tor proxy (Tor Browser 9150 or Tor service 9050), local name lookups made to fail, WebRTC limited to the proxy plus a guard script, QUIC off, permissions always denied, links stay in the Tor profile, nothing saved, profile deleted on exit. Fails closed: no Tor running means no tab and never a direct connection. Recognition does not bundle Tor. |
-| Tor leak check (`recognition:tor`) | Built: Tor port, exit network through the Tor Project API (over SOCKS), WebRTC probe in an open Tor tab, button to open check.torproject.org in a Tor tab. Rules in TorRules.cs are executed by tests; the engine behaviour needs the manual check (smoke sheet I). |
-| Tor off switch | Settings row. Off removes the menu item, closes Tor tabs, hides the built-in tor-* exits and Tor text on the VPN page, and stops probing the Tor ports. |
-| Not claimed | Tor Browser style anonymity (identical fingerprint for all users), per-site circuit isolation, time zone and language spoofing. Stated on the Tor page. |
 

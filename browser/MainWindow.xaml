@@ -98,7 +98,6 @@
               <Separator/>
               <MenuItem Header="Tools (PDF, images, page tools)" Click="MenuTools_Click"/>
               <MenuItem Header="VPN / proxy" Click="Vpn_Click"/>
-              <MenuItem x:Name="TorMenuItem" Header="Private Tor tab" Click="MenuTor_Click"/>
               <MenuItem Header="Network"   Click="MenuNetwork_Click"/>
               <MenuItem Header="Passwords" Click="MenuPasswords_Click"/>
               <MenuItem Header="Shield (ads, trackers, fingerprinting)" Click="MenuShield_Click"/>

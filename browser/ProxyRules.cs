@@ -39,7 +39,7 @@ namespace Recognition.Browser
             return p.Substring(0, i).ToUpperInvariant() + " " + p.Substring(i + 3);
         }
 
-        // true when the exit is on this computer (Tor, a local VPN client's proxy)
+        // true when the exit is on this computer (a local VPN client's proxy)
         public static bool IsLocal(string? proxy)
         {
             var p = (proxy ?? "").ToLowerInvariant();
