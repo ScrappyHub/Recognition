@@ -101,6 +101,7 @@
               <MenuItem Header="Shield (ads, trackers, fingerprinting)" Click="MenuShield_Click"/>
               <MenuItem Header="Passkeys" Click="MenuPasskeys_Click"/>
               <MenuItem Header="Extensions" Click="MenuExtensions_Click"/>
+              <MenuItem Header="SoteriaVault link" Click="MenuSoteria_Click"/>
               <MenuItem Header="Setup snapshot" Click="MenuSetup_Click"/>
               <MenuItem Header="Settings"  Click="MenuSettings_Click"/>
               <MenuItem Header="Export Session (governed packet)" Click="Export_Click"/>

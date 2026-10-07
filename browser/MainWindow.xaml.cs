@@ -487,6 +487,7 @@ document.addEventListener('keydown',function(e){
             "shield" => "Shield",
             "passkeys" => "Passkeys",
             "extensions" => "Extensions",
+            "soteria" => "SoteriaVault",
             _ => "Recognition"
         };
 
@@ -875,6 +876,7 @@ document.addEventListener('keydown',function(e){
                 if (r.TryGetProperty("shield_level", out var sl) && sl.ValueKind == JsonValueKind.String && sl.GetString() is "off" or "standard" or "strict") _shieldLevel = sl.GetString()!;
                 if (r.TryGetProperty("passkeys_level", out var pl) && pl.ValueKind == JsonValueKind.String && pl.GetString() is "on" or "off") _passkeyLevel = pl.GetString()!;
                 if (r.TryGetProperty("tracking_level", out var tl) && tl.ValueKind == JsonValueKind.String && tl.GetString() is "off" or "basic" or "balanced" or "strict") _trackingLevel = tl.GetString()!;
+                if (r.TryGetProperty("soteria_root", out var sr) && sr.ValueKind == JsonValueKind.String && SoteriaBridge.IsSafeRoot(sr.GetString())) _soteriaRoot = sr.GetString()!.Trim();
                 if (r.TryGetProperty("home_url", out var hu)) { var s = hu.GetString(); if (!string.IsNullOrWhiteSpace(s)) _homeUrl = s; }
                 if (r.TryGetProperty("appearance", out var ap) && ap.ValueKind == JsonValueKind.Object) _appearance.FromJson(ap);
             }
@@ -888,7 +890,7 @@ document.addEventListener('keydown',function(e){
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
                 File.WriteAllText(p, "{" + J("blocking_enabled") + ":" + (_blockingEnabled ? "true" : "false") + "," +
                                           J("strip_tracking") + ":" + (_stripTracking ? "true" : "false") + "," + J("send_gpc") + ":" + (_sendGpc ? "true" : "false") + "," + J("shield_level") + ":" + J(_shieldLevel) + "," + J("passkeys_level") + ":" + J(_passkeyLevel) + "," + J("tracking_level") + ":" + J(_trackingLevel) + "," +
-                                          J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
+                                          J("soteria_root") + ":" + J(_soteriaRoot) + "," + J("home_url") + ":" + J(_homeUrl) + "," + J("appearance") + ":" + _appearance.ToJson() + "}\n", new UTF8Encoding(false));
             }
             catch { }
         }
@@ -1318,6 +1320,7 @@ document.addEventListener('keydown',function(e){
                 "shield"    => ShieldHtml(),
                 "passkeys"  => PasskeysHtml(),
                 "extensions" => ExtensionsHtml(),
+                "soteria"   => SoteriaHtml(),
                 "viewer"    => ViewerReloadHtml(tab),
                 _         => (tab.Private ? PrivateStartPageHtml() : StartPageHtml())
             };
@@ -1804,6 +1807,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             else if ((msg.StartsWith("flt-") || msg.StartsWith("shield-")) && tab.Internal == "shield") HandleShieldMessage(msg);
             else if (msg.StartsWith("pk-") && tab.Internal == "passkeys") HandlePasskeyMessage(msg);
             else if (msg.StartsWith("ext-") && tab.Internal == "extensions") HandleExtMessage(msg);
+            else if (msg.StartsWith("sv-") && tab.Internal == "soteria") HandleSoteriaMessage(msg);
             else if (msg.StartsWith("appearance-set:"))
             {
                 var parts = msg.Substring("appearance-set:".Length).Split(new[] { ':' }, 2);
@@ -2076,7 +2080,7 @@ else{location.href='https://duckduckgo.com/?q='+encodeURIComponent(v);}});
             if (input.StartsWith("recognition:", StringComparison.OrdinalIgnoreCase))
             {
                 var name = input.Substring("recognition:".Length).ToLowerInvariant();
-                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "shield" or "passkeys" or "extensions" or "start" ? name : "start");
+                LoadInternal(tab, name is "history" or "downloads" or "bookmarks" or "settings" or "network" or "setup" or "passwords" or "tools" or "shield" or "passkeys" or "extensions" or "soteria" or "start" ? name : "start");
                 return;
             }
             tab.Internal = "";

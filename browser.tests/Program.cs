@@ -845,6 +845,58 @@ Console.WriteLine("=== Password vault (executed C#) ===");
     Check(fs.Contains("input[type=password]") && fs.Contains("dispatchEvent"), "fill script: targets password fields and notifies the page");
 }
 
+// ---- SoteriaVault link: the contract is checked against SoteriaVault's own rules, and nothing else is trusted --------------------------
+{
+    const string svContract = "{\"schema\":\"soteriavault.connector_contract.v1\",\"name\":\"recognition\",\"kind\":\"browser_password_manager_bridge\",\"phase\":\"contract_only\",\"enabled\":false,\"required_for_standalone\":false,\"preferred_after_standalone\":false,\"dependency_policy\":\"must_not_fail_if_absent\",\"purpose\":\"x\",\"allowed_now\":[\"declare_contract\",\"emit_readiness\",\"emit_receipts\",\"remain_absent_without_failure\"],\"forbidden_before_standalone_seal\":[\"hard_runtime_dependency\",\"secret_release_to_external_runtime\",\"required_external_verification\",\"engine_failure_if_missing\"],\"future_allowed_after_standalone\":[\"signed_receipt_witness\"]}";
+    const string svRegistry = "{\"schema\":\"soteriavault.connector_registry.v1\",\"standalone_first\":true,\"hard_external_dependencies_allowed\":false,\"missing_connectors_must_not_fail_engine\":true,\"connectors\":[]}";
+    Func<string?, string?, Func<string, byte[]?>> svFiles = (svc, svr) => svrel => svrel == SoteriaBridge.ContractRel ? (svc == null ? null : System.Text.Encoding.UTF8.GetBytes(svc)) : svrel == SoteriaBridge.RegistryRel ? (svr == null ? null : System.Text.Encoding.UTF8.GetBytes(svr)) : null;
+    const string svRoot = "C:\\dev\\privacy-sector";
+
+    var svNone = SoteriaBridge.Evaluate("", svFiles(svContract, svRegistry));
+    Check(svNone.State == SoteriaState.NotConfigured, "soteria: no folder chosen -> not configured (nothing is searched for)");
+    var svOk = SoteriaBridge.Evaluate(svRoot, svFiles(svContract, svRegistry));
+    Check(svOk.State == SoteriaState.ContractOnly && svOk.Capabilities.Contains("emit_receipts") && svOk.ContractSha256.Length == 64, "soteria: the real contract (contract_only, disabled) -> declared, not switched on, with a fingerprint");
+    var svOk2 = SoteriaBridge.Evaluate(svRoot, svFiles(svContract, svRegistry));
+    Check(svOk.ContractSha256 == svOk2.ContractSha256, "soteria: the fingerprint is deterministic");
+    var svLive = SoteriaBridge.Evaluate(svRoot, svFiles(svContract.Replace("\"phase\":\"contract_only\"", "\"phase\":\"active\"").Replace("\"enabled\":false", "\"enabled\":true"), svRegistry));
+    Check(svLive.State == SoteriaState.Ready && svLive.ContractSha256 != svOk.ContractSha256, "soteria: switched on by SoteriaVault -> ready, and the fingerprint changes with the file");
+    Check(SoteriaBridge.Evaluate(svRoot, svFiles(svContract.Replace("\"enabled\":false", "\"enabled\":true"), svRegistry)).State == SoteriaState.ContractOnly, "soteria: enabled but still contract_only -> still not switched on");
+    Check(SoteriaBridge.Evaluate(svRoot, svFiles(null, svRegistry)).State == SoteriaState.Unavailable, "soteria: no contract file -> unavailable (the link fails soft)");
+    Check(SoteriaBridge.Evaluate(svRoot, svFiles(svContract, null)).State == SoteriaState.Invalid, "soteria: contract without a registry -> refused");
+    Check(SoteriaBridge.Evaluate(svRoot, svrel1 => throw new IOException("denied")).State == SoteriaState.Unavailable, "soteria: unreadable files -> unavailable, never an exception");
+    foreach (var (svLabel, svBad) in new[]
+    {
+        ("required for standalone", svContract.Replace("\"required_for_standalone\":false", "\"required_for_standalone\":true")),
+        ("hard dependency policy", svContract.Replace("must_not_fail_if_absent", "fail_if_absent")),
+        ("secret release not forbidden", svContract.Replace("\"secret_release_to_external_runtime\",", "")),
+        ("hard dependency not forbidden", svContract.Replace("\"hard_runtime_dependency\",", "")),
+        ("wrong name", svContract.Replace("\"name\":\"recognition\"", "\"name\":\"rebound\"")),
+        ("wrong kind", svContract.Replace("browser_password_manager_bridge", "other")),
+        ("future schema", svContract.Replace("connector_contract.v1", "connector_contract.v2")),
+        ("missing required_for_standalone", svContract.Replace("\"required_for_standalone\":false,", "")),
+        ("not json", "{ nope"),
+        ("array root", "[]"),
+        ("empty", ""),
+    })
+        Check(SoteriaBridge.Evaluate(svRoot, svFiles(svBad, svRegistry)).State == SoteriaState.Invalid, "soteria: contract refused when it breaks SoteriaVault's own rules (" + svLabel + ")");
+    foreach (var (svLabel2, svBadReg) in new[]
+    {
+        ("hard external dependencies allowed", svRegistry.Replace("\"hard_external_dependencies_allowed\":false", "\"hard_external_dependencies_allowed\":true")),
+        ("not standalone-first", svRegistry.Replace("\"standalone_first\":true", "\"standalone_first\":false")),
+        ("unknown registry schema", svRegistry.Replace("registry.v1", "registry.v9")),
+        ("registry not json", "oops"),
+    })
+        Check(SoteriaBridge.Evaluate(svRoot, svFiles(svContract, svBadReg)).State == SoteriaState.Invalid, "soteria: registry refused (" + svLabel2 + ")");
+    Check(SoteriaBridge.Evaluate(svRoot, svrel2 => new byte[SoteriaBridge.MaxFileBytes + 1]).State == SoteriaState.Invalid, "soteria: an oversized contract file is not trusted");
+    var svOdd = SoteriaBridge.Evaluate(svRoot, svFiles(svContract.Replace("\"emit_receipts\"", "\"Emit Receipts; rm -rf\""), svRegistry));
+    Check(svOdd.State == SoteriaState.ContractOnly && !svOdd.Capabilities.Any(svcap => svcap.Contains(' ') || svcap.Contains(';')), "soteria: capability names from the file are filtered before they reach the page");
+
+    foreach (var svGood in new[] { "C:\\dev\\privacy-sector", "D:/tools/sv", "c:\\x\\y\\" }) Check(SoteriaBridge.IsSafeRoot(svGood), "soteria: accepted folder " + svGood);
+    var svBadList = new[] { "", "   ", "privacy-sector", "..\\x", "\\\\server\\share\\sv", "\\\\?\\C:\\sv", "C:\\a\\..\\b", "C:\\a\\.\\b", "C:sv", "C:\\a:stream", "C:\\a|b", "C:\\a\"b", "C:\\a\u0000b", "C:\\" + new string('a', 300) };
+    foreach (var svBad2 in svBadList)
+        Check(!SoteriaBridge.IsSafeRoot(svBad2), "soteria: refused folder #" + Array.IndexOf(svBadList, svBad2));
+}
+
 // ---- stress: the filter engine at real-list scale, adversarial input, and PDF/extension abuse ------------------------------------
 {
     var stSw = System.Diagnostics.Stopwatch.StartNew();

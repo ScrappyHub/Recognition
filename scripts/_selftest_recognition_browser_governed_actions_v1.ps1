@@ -55,6 +55,14 @@ if($navGlue -match 'StartsWith\("http://localhost"|StartsWith\("http://127\.0\.0
 $fe = Get-Content -LiteralPath (Join-Path $bdir "FilterEngine.cs") -Raw
 $fg = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Filters.cs") -Raw
 $sj = Get-Content -LiteralPath (Join-Path $bdir "shield\fingerprint_shield.js") -Raw
+# SoteriaVault link: optional, read-only, no secrets, no processes, no network (docs\proposals\SOTERIA_INTEGRATION_V1.md).
+$sb = Get-Content -LiteralPath (Join-Path $bdir "SoteriaBridge.cs") -Raw
+$sw = Get-Content -LiteralPath (Join-Path $bdir "MainWindow.Soteria.cs") -Raw
+if($sb -match 'HttpClient|WebClient|WebRequest|TcpClient|UdpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|System\.Text\.RegularExpressions|File\.Write|File\.Delete|Directory\.Delete'){ $bad += "SoteriaBridge.cs must stay pure: no network, processes, writes, deletes or regex" }
+if($sw -match 'HttpClient|WebClient|WebRequest|Process\.Start|ProcessStartInfo|File\.Write|File\.Delete|Directory\.Delete|File\.Copy|File\.Move|PasswordVault|Decrypt|Unprotect'){ $bad += "MainWindow.Soteria.cs may only read the two contract files: no processes, writes, network or secret handling" }
+if($sb -notmatch 'secret_release_to_external_runtime' -or $sb -notmatch 'hard_runtime_dependency' -or $sb -notmatch 'must_not_fail_if_absent'){ $bad += "the SoteriaVault link must refuse a contract that allows secret release or hard dependencies" }
+if($sw -notmatch 'soteria\.check'){ $bad += "SoteriaVault checks must be receipted (soteria.check)" }
+if($sw -notmatch 'IsSafeRoot'){ $bad += "the SoteriaVault folder must pass SoteriaBridge.IsSafeRoot before use" }
 if($fe -match 'HttpClient|WebClient|WebRequest|TcpClient|UdpClient|Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|System\.Text\.RegularExpressions'){ $bad += "FilterEngine.cs must stay local-only and regex-free (no network, processes, dynamic code, or backtracking regex on hostile lists)" }
 if($fg -match 'Process\.Start|ProcessStartInfo|Assembly\.Load|Activator\.Create|TcpClient|UdpClient|WebClient'){ $bad += "MainWindow.Filters.cs may only use HttpClient for the list updater" }
 if(([regex]::Matches($fg, 'new HttpClient\(')).Count -ne 1){ $bad += "exactly one HttpClient (the user-initiated list updater) is allowed in MainWindow.Filters.cs" }

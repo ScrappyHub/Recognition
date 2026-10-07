@@ -58,10 +58,10 @@ Identity-bound encrypted profile and governed recognition instrument.
 
 ## Authoritative ecosystem sources
 
-- `C:\dev\_ecosystem\SERVICE_MAP.md`
-- `C:\dev\_ecosystem\service.registry.json`
-- `C:\dev\_ecosystem\AGENT_POLICY.md`
-- `C:\dev\_ecosystem\SHARED_INVARIANTS.md`
+- `C:\dev\Constellation\ecosystem\SERVICE_MAP.md`
+- `C:\dev\Constellation\registry\services.json`
+- `C:\dev\Constellation\ecosystem\AGENT_POLICY.md`
+- `C:\dev\Constellation\ecosystem\SHARED_INVARIANTS.md`
 
 ## Change governance
 

@@ -2,7 +2,7 @@
     "project_id":  "recognition",
     "canonical_name":  "Recognition",
     "ecosystem":  {
-                      "registry_schema":  "atlas.service.registry.v1",
+                      "registry_schema":  "constellation.service.registry.v1",
                       "service_id":  "recognition",
                       "layer":  "foundation.identity-profile",
                       "role":  "Identity-bound encrypted profile and governed recognition instrument.",
@@ -21,8 +21,8 @@
                                                 "recognition",
                                                 "receipt"
                                             ],
-                      "service_map_path":  "C:\\dev\\_ecosystem\\SERVICE_MAP.md",
-                      "registry_path":  "C:\\dev\\_ecosystem\\service.registry.json",
+                      "service_map_path":  "C:\\dev\\Constellation\\ecosystem\\SERVICE_MAP.md",
+                      "registry_path":  "C:\\dev\\Constellation\\registry\\services.json",
                       "integration_doc_path":  "docs/canonical/ECOSYSTEM_INTEGRATION.md"
                   }
 }
